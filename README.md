@@ -29,7 +29,22 @@ Hệ thống ETL (Extract, Transform, Load) nội bộ được viết bằng Py
 
 ---
 
-## 🚀 Hướng dẫn cài đặt & Khởi động nhanh (Quick Start)
+## ⚡ Hướng dẫn chạy nhanh bằng File `.bat` (Khuyên dùng trên Windows)
+
+Để thuận tiện nhất trên Windows, mình đã tạo sẵn file **`run_pipeline.bat`** tích hợp toàn bộ các bước từ setup môi trường cho đến chạy pipeline. Bạn chỉ cần:
+
+1.  Click đúp chuột vào file **`run_pipeline.bat`** (hoặc chạy lệnh `.\run_pipeline.bat` trong PowerShell/CMD).
+2.  Bảng điều khiển tương tác sẽ xuất hiện cho phép bạn bấm số chọn chức năng:
+    *   **Phím 1:** Tự động cài đặt thư viện Python, bật Docker Postgres và khởi tạo bảng.
+    *   **Phím 2:** Nhập đường dẫn file Scimago thô để import.
+    *   **Phím 3:** Đồng bộ dữ liệu với OpenAlex API.
+    *   **Phím 4:** Xuất báo cáo (Excel & CSV) ra thư mục `data/`.
+    *   **Phím 5:** Xem thống kê các bảng dữ liệu hiện tại.
+    *   **Phím 6 (FULL Pipeline):** Tự động chạy tuần tự cả 3 bước: Import -> Sync -> Export.
+
+---
+
+## 🚀 Hướng dẫn cài đặt & Khởi động thủ công (Manual Setup)
 
 ### 1. Chuẩn bị môi trường Python
 Cài đặt các thư viện Python cần thiết:
