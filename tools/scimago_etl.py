@@ -20,11 +20,14 @@ import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-load_dotenv()
+# Lấy đường dẫn tuyệt đối tới file .env nằm ở thư mục gốc của project
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+dotenv_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(dotenv_path, override=True)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5432/scientific_journal_db",
+    "postgresql+psycopg2://postgres:postgres@localhost:5433/scientific_journal_db",
 )
 
 SCIMAGO_DEFAULT_URL = "https://www.scimagojr.com/journalrank.php?out=xls"
