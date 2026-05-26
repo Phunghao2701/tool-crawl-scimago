@@ -41,8 +41,14 @@ CREATE TABLE IF NOT EXISTS journal (
     is_open_access   BOOLEAN,
     is_oa_diamond    BOOLEAN,
     coverage      TEXT,
+    openalex_id         TEXT,
+    homepage_url        TEXT,
+    works_count         INT,
+    cited_by_count      INT,
+    openalex_synced_at  TIMESTAMP,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_journal_source_id UNIQUE (source_id)
+    CONSTRAINT uq_journal_source_id UNIQUE (source_id),
+    CONSTRAINT uq_journal_openalex_id UNIQUE (openalex_id)
 );
 
 -- ---------------------------------------------------------------

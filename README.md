@@ -85,3 +85,33 @@ Vì Scimago cấu hình chặn bot rất chặt chẽ (gây lỗi 403 Forbidden 
     ```bash
     python tools/scimago_etl.py stats
     ```
+
+---
+
+## Đồng bộ hóa với OpenAlex API (Đồng bộ metadata tạp chí)
+
+Dữ liệu Scimago chỉ chứa các số liệu xếp hạng. Bạn có thể sử dụng công cụ đồng bộ OpenAlex để lấy thêm thông tin chi tiết (trang chủ tạp chí, tổng số bài báo, tổng số lượt trích dẫn) dựa trên mã số ISSN.
+
+### 1. Cấu hình Email
+OpenAlex yêu cầu gửi kèm email liên hệ của bạn trong Header (`User-Agent`) để sử dụng Polite Pool giúp tốc độ phản hồi nhanh hơn.
+Hãy cấu hình email của bạn trong file `.env`:
+```env
+OPENALEX_EMAIL=your-email@example.com
+```
+
+### 2. Tiến hành Đồng bộ (Sync)
+*   **Đồng bộ thử nghiệm (Chỉ đồng bộ 10 tạp chí chưa đồng bộ):**
+    ```bash
+    python tools/openalex_sync.py sync --limit 10
+    ```
+*   **Đồng bộ toàn bộ các tạp chí:**
+    ```bash
+    python tools/openalex_sync.py sync
+    ```
+
+### 3. Xem thống kê đồng bộ hóa
+Kiểm tra tiến trình đồng bộ và xem thử dữ liệu lấy từ OpenAlex:
+```bash
+python tools/openalex_sync.py stats
+```
+
