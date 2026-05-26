@@ -68,6 +68,7 @@ dir /b data\*.csv data\*.xls data\*.xlsx 2>nul
 echo.
 set /p filepath="Nhap duong dan file import (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
+set "filepath=%filepath:"=%"
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
 if "%year%"=="" set year=2025
 
@@ -120,6 +121,7 @@ echo  6. RUN FULL PIPELINE (IMPORT - SYNC - EXPORT)
 echo ==========================================
 set /p filepath="Nhap duong dan file import (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
+set "filepath=%filepath:"=%"
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
 if "%year%"=="" set year=2025
 
