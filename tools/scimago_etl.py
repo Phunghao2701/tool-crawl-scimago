@@ -371,6 +371,13 @@ def normalize(engine, batch_id: str, year: int):
                 skipped += 1
                 continue
 
+            # Load raw data from json to fetch non-staging columns like Coverage
+            raw_data = raw["raw_json"] if raw["raw_json"] else {}
+            if isinstance(raw_data, str):
+                import json
+                raw_data = json.loads(raw_data)
+            coverage_val = raw_data.get("Coverage", None)
+
             # Zone upserts with cache
             country_val = raw["country"]
             country_key = (country_val, "country")
@@ -394,10 +401,10 @@ def normalize(engine, batch_id: str, year: int):
             j_row = conn.execute(text("""
                 INSERT INTO journal
                     (source_id, publisher_id, country_id, region_id,
-                     display_name, type, is_open_access, is_oa_diamond, issn)
+                     display_name, type, is_open_access, is_oa_diamond, issn, coverage)
                 VALUES
                     (:src_id, :pub_id, :country_id, :region_id,
-                     :display_name, :type, :is_oa, :is_dia, :issn)
+                     :display_name, :type, :is_oa, :is_dia, :issn, :coverage)
                 ON CONFLICT (source_id) DO UPDATE SET
                     publisher_id  = EXCLUDED.publisher_id,
                     country_id    = EXCLUDED.country_id,
@@ -406,7 +413,8 @@ def normalize(engine, batch_id: str, year: int):
                     type          = EXCLUDED.type,
                     is_open_access = EXCLUDED.is_open_access,
                     is_oa_diamond  = EXCLUDED.is_oa_diamond,
-                    issn          = EXCLUDED.issn
+                    issn          = EXCLUDED.issn,
+                    coverage      = EXCLUDED.coverage
                 RETURNING journal_id
             """), {
                 "src_id":      src_id,
@@ -418,6 +426,7 @@ def normalize(engine, batch_id: str, year: int):
                 "is_oa":       norm_bool(raw["open_access"]),
                 "is_dia":      norm_bool(raw["open_access_diamond"]),
                 "issn":        (raw["issn"] or "").strip() or None,
+                "coverage":    (str(coverage_val) if coverage_val is not None else "").strip() or None,
             }).fetchone()
             jid = j_row[0]
 

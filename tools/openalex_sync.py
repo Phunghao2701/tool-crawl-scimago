@@ -197,59 +197,99 @@ def cmd_stats(args):
 
 def cmd_export(args):
     import pandas as pd
+    import json
     engine = create_engine(DATABASE_URL)
     
     print("[export] Fetching enriched data from PostgreSQL...")
     query = """
         SELECT 
-            j.source_id AS scimago_id,
-            j.display_name AS title,
-            j.issn,
-            j.type,
-            p.display_name AS publisher,
-            z_c.name AS country,
-            z_r.name AS region,
-            j.is_open_access,
-            j.is_oa_diamond,
-            j.homepage_url,
+            j.source_id,
+            j.issn AS normalized_issn,
             j.openalex_id,
-            j.works_count,
-            j.cited_by_count,
-            (SELECT value_int FROM journal_ranking jr 
-             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
-             WHERE jr.journal_id = j.journal_id AND m.code = 'RANK' 
-             ORDER BY jr.year DESC LIMIT 1) AS last_rank,
-            (SELECT value_float FROM journal_ranking jr 
-             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
-             WHERE jr.journal_id = j.journal_id AND m.code = 'SJR' 
-             ORDER BY jr.year DESC LIMIT 1) AS last_sjr,
-            (SELECT value_txt FROM journal_ranking jr 
-             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
-             WHERE jr.journal_id = j.journal_id AND m.code = 'SJR_BEST_QUARTILE' 
-             ORDER BY jr.year DESC LIMIT 1) AS last_best_quartile
+            j.homepage_url AS openalex_homepage,
+            j.works_count AS openalex_works_count,
+            j.cited_by_count AS openalex_cited_by_count,
+            (SELECT raw_json FROM raw_scimago_journal r 
+             WHERE r.source_id = j.source_id 
+             ORDER BY r.created_at DESC LIMIT 1) AS raw_json
         FROM journal j
-        LEFT JOIN publisher p ON j.publisher_id = p.publisher_id
-        LEFT JOIN zone z_c ON j.country_id = z_c.zone_id
-        LEFT JOIN zone z_r ON j.region_id = z_r.zone_id
-        ORDER BY last_sjr DESC NULLS LAST, last_rank ASC NULLS LAST
     """
     
     try:
-        df = pd.read_sql(query, engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(query)).fetchall()
+            
+        records = []
+        for row in rows:
+            raw_dict = {}
+            if row.raw_json:
+                if isinstance(row.raw_json, str):
+                    raw_dict = json.loads(row.raw_json)
+                elif isinstance(row.raw_json, dict):
+                    raw_dict = row.raw_json
+            
+            # Fallback if raw_json is missing
+            if not raw_dict:
+                raw_dict = {
+                    "Sourceid": row.source_id,
+                    "Issn": row.normalized_issn,
+                }
+            
+            # Override Issn with normalized ISSN from database (cleaner and verified)
+            if row.normalized_issn:
+                issn_key = "Issn"
+                for k in raw_dict.keys():
+                    if k.lower() == "issn":
+                        issn_key = k
+                        break
+                raw_dict[issn_key] = row.normalized_issn
+                
+            # Dynamically attach OpenAlex fields
+            raw_dict["OpenAlex ID"] = row.openalex_id
+            raw_dict["OpenAlex Homepage"] = row.openalex_homepage
+            raw_dict["OpenAlex Works Count"] = row.openalex_works_count
+            raw_dict["OpenAlex Cited By Count"] = row.openalex_cited_by_count
+            
+            records.append(raw_dict)
+            
+        if not records:
+            print("[export] No data found in database to export.")
+            return
+            
+        df = pd.DataFrame(records)
         
-        # In ra màn hình mẫu preview
+        # Sort dynamically by SJR descending if SJR column exists
+        sjr_col = None
+        for col in df.columns:
+            if col.lower() == "sjr":
+                sjr_col = col
+                break
+        if sjr_col:
+            df_temp_sjr = pd.to_numeric(df[sjr_col].astype(str).str.replace(",", ".", regex=False), errors='coerce')
+            df = df.iloc[df_temp_sjr.sort_values(ascending=False).index]
+        
+        # Select preview columns dynamically
+        cols_to_print = []
+        for target in ["title", "issn", "publisher", "sjr", "openalex id", "openalex works count"]:
+            for col in df.columns:
+                if col.lower() == target:
+                    cols_to_print.append(col)
+                    break
+        if not cols_to_print:
+            cols_to_print = list(df.columns[:8])
+            
+        # Print preview sample
         limit = args.limit or 10
-        print(f"\n[export] Enriched Journals (Top {limit} by SJR):")
-        cols_to_print = ["title", "issn", "publisher", "country", "last_sjr", "last_best_quartile", "works_count", "cited_by_count"]
+        print(f"\n[export] Enriched Journals Preview (Top {limit}):")
         print(df[cols_to_print].head(limit).to_string(index=False))
         
-        # Lưu ra file CSV
+        # Save to CSV
         output_file = args.output
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
         df.to_csv(output_file, index=False, encoding="utf-8-sig")
         print(f"\n[OK] Exported {len(df)} enriched records to CSV: {output_file}")
         
-        # Xuất ra file Excel (.xlsx)
+        # Save to Excel (.xlsx)
         excel_file = os.path.splitext(output_file)[0] + ".xlsx"
         try:
             df.to_excel(excel_file, index=False)
@@ -259,7 +299,6 @@ def cmd_export(args):
             try:
                 import subprocess
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-                # Import lại pandas engine sau khi cài đặt openpyxl
                 df.to_excel(excel_file, index=False)
                 print(f"[OK] Exported {len(df)} enriched records to Excel: {excel_file}")
             except Exception as e_install:
