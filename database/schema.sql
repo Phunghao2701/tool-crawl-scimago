@@ -153,7 +153,7 @@ CREATE TABLE "Journal" (
   "is_oa_diamond" bool,
   "coverage" varchar,
   "issn" varchar,
-  "scope" text,
+  "scope_detail" varchar,
   
   -- Các cột phục vụ đồng bộ OpenAlex
   "openalex_id" varchar UNIQUE,

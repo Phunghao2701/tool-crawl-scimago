@@ -46,42 +46,6 @@ def split_issns(v: str):
     return cleaned
 
 
-def scrape_scimago_scope_with_driver(driver, source_id: str, is_first: bool):
-    if not source_id:
-        return None, is_first
-    
-    url = f"https://www.scimagojr.com/journalsearch.php?q={source_id}&tip=sid&clean=0"
-    try:
-        from selenium.webdriver.common.by import By
-        driver.get(url)
-        # Đợi cho trang load và vượt qua Cloudflare Turnstile
-        # Lần đầu tiên chờ lâu hơn để cookie session ổn định, các lần sau load nhanh tức thì
-        wait_time = 8.0 if is_first else 1.5
-        time.sleep(wait_time)
-        
-        body_text = driver.find_element(By.TAG_NAME, "body").text
-        lines = [line.strip() for line in body_text.split("\n")]
-        
-        scope_text = ""
-        for i, line in enumerate(lines):
-            if line == "Scope":
-                if i + 1 < len(lines):
-                    scope_text = lines[i+1]
-                break
-        
-        if scope_text:
-            return scope_text, False
-    except Exception as e:
-        print(f"    [Scope Scrape Error] Failed to scrape Scope for source_id {source_id}: {e}")
-    return None, is_first
-
-
-def generate_fallback_scope(source_data: dict):
-    topics = source_data.get("topics", [])
-    topic_names = [t.get("display_name") for t in topics if t.get("display_name")]
-    if topic_names:
-        return f"This journal covers topics and research areas in: {', '.join(topic_names[:5])}."
-    return None
 
 
 def sync_journals(limit: int):
@@ -114,23 +78,6 @@ def sync_journals(limit: int):
     if not journals:
         print("[INFO] No journals need synchronization.")
         return
-
-    # Khởi tạo Selenium Chrome Driver
-    print("\nInitializing Selenium Chrome Driver for Scimago Scope scraping...")
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    
-    options = webdriver.ChromeOptions()
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument("--log-level=3")
-    options.add_argument("--silent")
-    
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    is_first_scimago_request = True
 
     try:
         print(f"[sync] Starting synchronization for {len(journals)} journals...")
@@ -185,18 +132,6 @@ def sync_journals(limit: int):
                             works_count = source_data.get("works_count")
                             cited_by_count = source_data.get("cited_by_count")
                             
-                            # Cào Scope trực tiếp từ Scimago
-                            scope = None
-                            if source_id:
-                                print(f"  -> Scraping Scope from Scimago (source_id: {source_id})...")
-                                scope, is_first_scimago_request = scrape_scimago_scope_with_driver(
-                                    driver, source_id, is_first_scimago_request
-                                )
-                            
-                            if not scope:
-                                print("     (Scimago Scope not found. Fallback to OpenAlex topics)")
-                                scope = generate_fallback_scope(source_data)
-                            
                             # Cập nhật thông tin vào DB
                             with engine.begin() as conn:
                                 conn.execute(text("""
@@ -205,7 +140,6 @@ def sync_journals(limit: int):
                                         homepage_url = :homepage_url,
                                         works_count = :works_count,
                                         cited_by_count = :cited_by_count,
-                                        scope = :scope,
                                         openalex_synced_at = :synced_at
                                     WHERE journal_id = :journal_id
                                 """), {
@@ -213,15 +147,11 @@ def sync_journals(limit: int):
                                     "homepage_url": homepage_url,
                                     "works_count": works_count,
                                     "cited_by_count": cited_by_count,
-                                    "scope": scope,
                                     "synced_at": datetime.utcnow(),
                                     "journal_id": journal_id
                                 })
                             
                             print(f"  -> SUCCESS: OpenAlex ID={openalex_id}, Works={works_count}, Cites={cited_by_count}")
-                            if scope:
-                                preview_scope = scope[:60] + "..." if len(scope) > 63 else scope
-                                print(f"     Scope: {preview_scope}")
                             success = True
                             break # Đã tìm thấy qua ISSN này, chuyển sang tạp chí khác
                     else:
@@ -245,11 +175,7 @@ def sync_journals(limit: int):
                 print("  -> FAILED: Journal not found or API error on all ISSNs.")
                 failed_count += 1
     finally:
-        print("\nClosing Selenium Chrome Driver...")
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        pass
         
     print(f"\n[sync] Finished! Synced: {synced_count}, Failed/Not found: {failed_count}")
 
@@ -300,7 +226,7 @@ def cmd_export(args):
             j.homepage_url AS openalex_homepage,
             j.works_count AS openalex_works_count,
             j.cited_by_count AS openalex_cited_by_count,
-            j.scope AS openalex_scope,
+            j.scope_detail,
             r.raw_json
         FROM "Journal" j
         LEFT JOIN (
@@ -345,7 +271,7 @@ def cmd_export(args):
             raw_dict["OpenAlex Homepage"] = row.openalex_homepage
             raw_dict["OpenAlex Works Count"] = row.openalex_works_count
             raw_dict["OpenAlex Cited By Count"] = row.openalex_cited_by_count
-            raw_dict["Scope"] = row.openalex_scope
+            raw_dict["Scope Detail"] = row.scope_detail
             
             records.append(raw_dict)
             
@@ -386,7 +312,7 @@ def cmd_export(args):
             lambda c: c.lower() == "openalex homepage",
             lambda c: c.lower() == "openalex works count",
             lambda c: c.lower() == "openalex cited by count",
-            lambda c: c.lower() == "scope",
+            lambda c: c.lower() == "scope detail",
             lambda c: c.lower().startswith("total docs. (") or c.lower().startswith("total docs ("),
             lambda c: "total docs" in c.lower() and "3years" in c.lower().replace(" ", ""),
             lambda c: "total refs" in c.lower(),
