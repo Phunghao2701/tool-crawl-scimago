@@ -170,6 +170,64 @@ def cmd_stats(args):
                 print(f"  {name:<50} {works:>8} {cites:>10} {oid:<25}")
 
 
+def cmd_export(args):
+    import pandas as pd
+    engine = create_engine(DATABASE_URL)
+    
+    print("[export] Fetching enriched data from PostgreSQL...")
+    query = """
+        SELECT 
+            j.source_id AS scimago_id,
+            j.display_name AS title,
+            j.type,
+            p.display_name AS publisher,
+            z_c.name AS country,
+            z_r.name AS region,
+            j.is_open_access,
+            j.is_oa_diamond,
+            j.homepage_url,
+            j.openalex_id,
+            j.works_count,
+            j.cited_by_count,
+            (SELECT value_int FROM journal_ranking jr 
+             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
+             WHERE jr.journal_id = j.journal_id AND m.code = 'RANK' 
+             ORDER BY jr.year DESC LIMIT 1) AS last_rank,
+            (SELECT value_float FROM journal_ranking jr 
+             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
+             WHERE jr.journal_id = j.journal_id AND m.code = 'SJR' 
+             ORDER BY jr.year DESC LIMIT 1) AS last_sjr,
+            (SELECT value_txt FROM journal_ranking jr 
+             JOIN ranking_metric m ON jr.metric_id = m.metric_id 
+             WHERE jr.journal_id = j.journal_id AND m.code = 'SJR_BEST_QUARTILE' 
+             ORDER BY jr.year DESC LIMIT 1) AS last_best_quartile
+        FROM journal j
+        LEFT JOIN publisher p ON j.publisher_id = p.publisher_id
+        LEFT JOIN zone z_c ON j.country_id = z_c.zone_id
+        LEFT JOIN zone z_r ON j.region_id = z_r.zone_id
+        ORDER BY last_sjr DESC NULLS LAST, last_rank ASC NULLS LAST
+    """
+    
+    try:
+        df = pd.read_sql(query, engine)
+        
+        # In ra màn hình mẫu preview
+        limit = args.limit or 10
+        print(f"\n[export] Enriched Journals (Top {limit} by SJR):")
+        cols_to_print = ["title", "publisher", "country", "last_sjr", "last_best_quartile", "works_count", "cited_by_count"]
+        print(df[cols_to_print].head(limit).to_string(index=False))
+        
+        # Lưu ra file CSV
+        output_file = args.output
+        # Tạo thư mục nếu chưa có
+        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+        df.to_csv(output_file, index=False, encoding="utf-8-sig")
+        print(f"\n[OK] Exported {len(df)} enriched records to: {output_file}")
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to export data: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="OpenAlex Sync Tool")
     sub = parser.add_subparsers(dest="command")
@@ -180,6 +238,11 @@ def main():
     
     # stats subcommand
     sub.add_parser("stats", help="Show OpenAlex synchronization stats")
+
+    # export subcommand
+    p_export = sub.add_parser("export", help="Export enriched journals to CSV")
+    p_export.add_argument("--output", default="data/enriched_journals.csv", help="Output CSV file path")
+    p_export.add_argument("--limit", type=int, default=20, help="Number of preview records on screen")
     
     args = parser.parse_args()
     
@@ -187,6 +250,8 @@ def main():
         sync_journals(args.limit)
     elif args.command == "stats":
         cmd_stats(args)
+    elif args.command == "export":
+        cmd_export(args)
     else:
         parser.print_help()
         sys.exit(1)
