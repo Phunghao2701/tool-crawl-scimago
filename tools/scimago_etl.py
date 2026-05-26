@@ -354,6 +354,15 @@ def normalize(engine, batch_id: str, year: int):
             "SELECT * FROM raw_scimago_journal WHERE import_batch_id = :bid"
         ), {"bid": batch_id}).mappings().all()
 
+        total_rows = len(raw_rows)
+        print(f"[normalize] Start processing {total_rows} journals to main database tables...")
+
+        # In-memory caches to reduce database SELECT/INSERT operations dramatically
+        zone_cache = {}
+        publisher_cache = {}
+        subject_area_cache = {}
+        subject_category_cache = {}
+
         ok = skipped = 0
         for raw in raw_rows:
             src_id = (raw["source_id"] or "").strip()
@@ -362,12 +371,24 @@ def normalize(engine, batch_id: str, year: int):
                 skipped += 1
                 continue
 
-            # Zone upserts
-            country_id = upsert_zone(conn, raw["country"], "country")
-            region_id  = upsert_zone(conn, raw["region"],  "region")
+            # Zone upserts with cache
+            country_val = raw["country"]
+            country_key = (country_val, "country")
+            if country_key not in zone_cache:
+                zone_cache[country_key] = upsert_zone(conn, country_val, "country")
+            country_id = zone_cache[country_key]
 
-            # Publisher upsert
-            pub_id = upsert_publisher(conn, raw["publisher"])
+            region_val = raw["region"]
+            region_key = (region_val, "region")
+            if region_key not in zone_cache:
+                zone_cache[region_key] = upsert_zone(conn, region_val, "region")
+            region_id = zone_cache[region_key]
+
+            # Publisher upsert with cache
+            pub_val = raw["publisher"]
+            if pub_val not in publisher_cache:
+                publisher_cache[pub_val] = upsert_publisher(conn, pub_val)
+            pub_id = publisher_cache[pub_val]
 
             # Journal upsert
             j_row = conn.execute(text("""
@@ -406,8 +427,15 @@ def normalize(engine, batch_id: str, year: int):
             for cat in categories:
                 # Area: use "areas" field if available, else derive from category name
                 area_name = (raw.get("areas") or "").strip() or "General"
-                area_id   = upsert_subject_area(conn, area_name)
-                cat_id    = upsert_subject_category(conn, area_id, cat["name"])
+                if area_name not in subject_area_cache:
+                    subject_area_cache[area_name] = upsert_subject_area(conn, area_name)
+                area_id = subject_area_cache[area_name]
+
+                cat_name = cat["name"]
+                cat_key = (area_id, cat_name)
+                if cat_key not in subject_category_cache:
+                    subject_category_cache[cat_key] = upsert_subject_category(conn, area_id, cat_name)
+                cat_id = subject_category_cache[cat_key]
 
                 # journal ↔ category link
                 conn.execute(text("""
@@ -452,6 +480,8 @@ def normalize(engine, batch_id: str, year: int):
                            "SCIMAGO", year, value_float=norm_decimal(raw["ref_doc"]))
 
             ok += 1
+            if ok % 1000 == 0 or ok == total_rows:
+                print(f"[normalize] Processed {ok}/{total_rows} journals ({(ok * 100) // total_rows}%)")
 
         print(f"[normalize] ok={ok}, skipped={skipped}")
 
