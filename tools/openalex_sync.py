@@ -21,7 +21,7 @@ load_dotenv(dotenv_path, override=True)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5433/scientific_journal_db",
+    "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
 )
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "academic-etl@example.com")
 

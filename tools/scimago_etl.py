@@ -27,7 +27,7 @@ load_dotenv(dotenv_path, override=True)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5433/scientific_journal_db",
+    "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
 )
 
 SCIMAGO_DEFAULT_URL = "https://www.scimagojr.com/journalrank.php?out=xls"
@@ -464,9 +464,18 @@ def cmd_import(args):
     engine = create_engine(DATABASE_URL)
 
     if args.file:
-        with open(args.file, "rb") as f:
+        file_path = args.file
+        # Nếu file không tồn tại ở thư mục làm việc hiện tại và là đường dẫn tương đối,
+        # tự động tìm trong thư mục gốc dự án.
+        if not os.path.exists(file_path) and not os.path.isabs(file_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            possible_path = os.path.join(project_root, file_path)
+            if os.path.exists(possible_path):
+                file_path = possible_path
+                
+        with open(file_path, "rb") as f:
             content = f.read()
-        print(f"[import] file={args.file}")
+        print(f"[import] file={file_path}")
     else:
         content = download_scimago(args.url)
 

@@ -2,6 +2,13 @@
 rem Change directory to the folder where this batch file is located
 cd /d "%~dp0"
 
+rem Auto-create .env file if it does not exist
+if not exist .env (
+    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db > .env
+    echo OPENALEX_EMAIL=academic-etl@example.com >> .env
+    echo [INFO] Da tu dong tao file .env mac dinh vi khong tim thay!
+)
+
 chcp 65001 > nul
 title Scimago and OpenAlex ETL Pipeline Control Panel
 color 0B
@@ -60,13 +67,15 @@ goto menu
 
 :import
 cls
+call :check_db
 echo ==========================================
 echo  2. IMPORT SCIMAGO DATA
 echo ==========================================
 echo [INFO] Danh sach cac file trong thu muc data:
 dir /b data\*.csv data\*.xls data\*.xlsx 2>nul
 echo.
-set /p filepath="Nhap duong dan file import (Mac dinh: data/scimagojr 2025.csv): "
+echo [INFO] Ban co the keo tha truc tiep file tu Windows Explorer vao cua so nay.
+set /p filepath="Nhap duong dan file (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
 set "filepath=%filepath:"=%"
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
@@ -80,6 +89,7 @@ goto menu
 
 :sync
 cls
+call :check_db
 echo ==========================================
 echo  3. SYNC OPENALEX DATA
 echo ==========================================
@@ -95,6 +105,7 @@ goto menu
 
 :export
 cls
+call :check_db
 echo ==========================================
 echo  4. EXPORT REPORT (EXCEL AND CSV)
 echo ==========================================
@@ -106,6 +117,7 @@ goto menu
 
 :stats
 cls
+call :check_db
 echo ==========================================
 echo  5. DATABASE STATISTICS
 echo ==========================================
@@ -116,10 +128,12 @@ goto menu
 
 :full
 cls
+call :check_db
 echo ==========================================
 echo  6. RUN FULL PIPELINE (IMPORT - SYNC - EXPORT)
 echo ==========================================
-set /p filepath="Nhap duong dan file import (Mac dinh: data/scimagojr 2025.csv): "
+echo [INFO] Ban co the keo tha truc tiep file tu Windows Explorer vao cua so nay.
+set /p filepath="Nhap duong dan file (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
 set "filepath=%filepath:"=%"
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
@@ -128,7 +142,7 @@ if "%year%"=="" set year=2025
 echo.
 echo [1/3] Dang tien hanh Import Scimago...
 python tools/scimago_etl.py import --file "%filepath%" --year %year%
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Qua trinh Import gap loi. Dung pipeline.
     pause
     goto menu
@@ -137,7 +151,7 @@ if %errorlevel% neq 0 (
 echo.
 echo [2/3] Dang tien hanh dong bo hoa tu OpenAlex API...
 python tools/openalex_sync.py sync
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Qua trinh dong bo hoa OpenAlex gap loi. Dung pipeline.
     pause
     goto menu
@@ -156,3 +170,22 @@ goto menu
 :exit
 echo Tam biet!
 exit
+
+:check_db
+python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; load_dotenv(); engine=create_engine(os.getenv('DATABASE_URL')); conn=engine.connect(); conn.close()" 2>nul
+if errorlevel 1 (
+    cls
+    echo ====================================================================
+    echo [LOI] KHONG THE KET NOI DEN DATABASE POSTGRESQL!
+    echo ====================================================================
+    echo Vui long kiem tra cac buoc sau:
+    echo  1. Ban da mo Docker Desktop hoac dich vu Docker len chua?
+    echo  2. Ban da chay lua chon "1. Setup Environment - DB" de tao container chua?
+    echo  3. Neu file .env cua ban bi thay doi, hay dam bao port la 5433 va password la 1234.
+    echo.
+    echo Vui long mo Docker Desktop va chay Option 1 truoc de thiet lap tu dong.
+    echo ====================================================================
+    pause
+    goto menu
+)
+exit /b 0
