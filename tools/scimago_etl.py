@@ -202,11 +202,11 @@ def upsert_zone(conn, name: str, zone_type: str):
     if not name or not name.strip():
         return None
     row = conn.execute(text("""
-        INSERT INTO zone (name, type)
-        VALUES (:name, :type)
+        INSERT INTO "Zone" (name, type, source)
+        VALUES (:name, :type, :source)
         ON CONFLICT (name, type) DO UPDATE SET name = EXCLUDED.name
         RETURNING zone_id
-    """), {"name": name.strip(), "type": zone_type}).fetchone()
+    """), {"name": name.strip(), "type": zone_type.upper(), "source": "SCIMAGO"}).fetchone()
     return row[0]
 
 
@@ -214,7 +214,7 @@ def upsert_publisher(conn, name: str):
     if not name or not name.strip():
         return None
     row = conn.execute(text("""
-        INSERT INTO publisher (display_name)
+        INSERT INTO "Publisher" (display_name)
         VALUES (:name)
         ON CONFLICT (display_name) DO UPDATE SET display_name = EXCLUDED.display_name
         RETURNING publisher_id
@@ -224,19 +224,19 @@ def upsert_publisher(conn, name: str):
 
 def upsert_metric(conn, code, display_name, metric_type):
     row = conn.execute(text("""
-        INSERT INTO ranking_metric (code, display_name, metric_type)
+        INSERT INTO "Ranking_Metric" (code, display_name, metric_type)
         VALUES (:code, :display_name, :metric_type)
         ON CONFLICT (code) DO UPDATE SET
             display_name = EXCLUDED.display_name,
             metric_type  = EXCLUDED.metric_type
         RETURNING metric_id
-    """), {"code": code, "display_name": display_name, "metric_type": metric_type}).fetchone()
+    """), {"code": code, "display_name": display_name, "metric_type": metric_type.upper()}).fetchone()
     return row[0]
 
 
 def upsert_subject_area(conn, name: str):
     row = conn.execute(text("""
-        INSERT INTO subject_area (display_name)
+        INSERT INTO "Subject_Area" (display_name)
         VALUES (:name)
         ON CONFLICT (display_name) DO UPDATE SET display_name = EXCLUDED.display_name
         RETURNING subject_area_id
@@ -244,9 +244,9 @@ def upsert_subject_area(conn, name: str):
     return row[0]
 
 
-def upsert_subject_category(conn, area_id: int, name: str):
+def upsert_subject_category(conn, area_id, name: str):
     row = conn.execute(text("""
-        INSERT INTO subject_category (subject_area_id, display_name)
+        INSERT INTO "Subject_Category" (subject_area_id, display_name)
         VALUES (:area_id, :name)
         ON CONFLICT (subject_area_id, display_name)
         DO UPDATE SET display_name = EXCLUDED.display_name
@@ -260,7 +260,7 @@ def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
     if value_txt is None and value_int is None and value_float is None:
         return
     conn.execute(text("""
-        INSERT INTO journal_ranking
+        INSERT INTO "Journal_Ranking"
             (journal_id, subject_category_id, source, metric_id, year,
              value_txt, value_int, value_float)
         VALUES
@@ -269,7 +269,7 @@ def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
         ON CONFLICT DO NOTHING
     """), {
         "jid": journal_id, "catid": category_id,
-        "src": source, "mid": metric_id, "yr": year,
+        "src": source.upper(), "mid": metric_id, "yr": year,
         "vtxt": value_txt, "vint": value_int,
         "vfloat": float(value_float) if value_float is not None else None,
     })
@@ -374,7 +374,6 @@ def normalize(engine, batch_id: str, year: int):
             # Load raw data from json to fetch non-staging columns like Coverage
             raw_data = raw["raw_json"] if raw["raw_json"] else {}
             if isinstance(raw_data, str):
-                import json
                 raw_data = json.loads(raw_data)
             coverage_val = raw_data.get("Coverage", None)
 
@@ -399,16 +398,16 @@ def normalize(engine, batch_id: str, year: int):
 
             # Journal upsert
             j_row = conn.execute(text("""
-                INSERT INTO journal
-                    (source_id, publisher_id, country_id, region_id,
+                INSERT INTO "Journal"
+                    (source_id, publisher_id, country, region,
                      display_name, type, is_open_access, is_oa_diamond, issn, coverage)
                 VALUES
                     (:src_id, :pub_id, :country_id, :region_id,
                      :display_name, :type, :is_oa, :is_dia, :issn, :coverage)
                 ON CONFLICT (source_id) DO UPDATE SET
                     publisher_id  = EXCLUDED.publisher_id,
-                    country_id    = EXCLUDED.country_id,
-                    region_id     = EXCLUDED.region_id,
+                    country       = EXCLUDED.country,
+                    region        = EXCLUDED.region,
                     display_name  = EXCLUDED.display_name,
                     type          = EXCLUDED.type,
                     is_open_access = EXCLUDED.is_open_access,
@@ -448,7 +447,7 @@ def normalize(engine, batch_id: str, year: int):
 
                 # journal ↔ category link
                 conn.execute(text("""
-                    INSERT INTO journal_subject_category (journal_id, subject_category_id)
+                    INSERT INTO "Journal_Subject_Category" (journal_id, subject_category_id)
                     VALUES (:jid, :cid)
                     ON CONFLICT DO NOTHING
                 """), {"jid": jid, "cid": cat_id})
@@ -466,7 +465,7 @@ def normalize(engine, batch_id: str, year: int):
             insert_ranking(conn, jid, None, metrics["SJR_BEST_QUARTILE"],
                            "SCIMAGO", year, value_txt=bq)
 
-            # Numeric metrics
+            # Numeric rankings
             insert_ranking(conn, jid, None, metrics["RANK"],
                            "SCIMAGO", year, value_int=norm_int(raw["rank_txt"]))
             insert_ranking(conn, jid, None, metrics["SJR"],
@@ -538,16 +537,17 @@ def cmd_stats(args):
     with engine.connect() as conn:
         tables = [
             "raw_scimago_journal",
-            "publisher", "zone", "journal", "journal_issn",
-            "subject_area", "subject_category", "journal_subject_category",
-            "ranking_metric", "journal_ranking",
+            "Publisher", "Zone", "Journal",
+            "Subject_Area", "Subject_Category", "Journal_Subject_Category",
+            "Ranking_Metric", "Journal_Ranking",
         ]
         print("\n[DB] Database stats:")
         print(f"{'Table':<35} {'Rows':>8}")
         print("-" * 45)
         for t in tables:
             try:
-                n = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+                t_escaped = f'"{t}"' if t[0].isupper() else t
+                n = conn.execute(text(f"SELECT COUNT(*) FROM {t_escaped}")).scalar()
                 print(f"  {t:<33} {n:>8,}")
             except Exception as exc:
                 print(f"  {t:<33} ERROR: {exc}")
@@ -556,8 +556,8 @@ def cmd_stats(args):
         rows = conn.execute(text("""
             SELECT j.source_id, j.display_name, j.type,
                    j.is_open_access, z.name AS country
-            FROM journal j
-            LEFT JOIN zone z ON z.zone_id = j.country_id
+            FROM "Journal" j
+            LEFT JOIN "Zone" z ON z.zone_id = j.country
             ORDER BY j.journal_id
             LIMIT 10
         """)).fetchall()
@@ -568,9 +568,9 @@ def cmd_stats(args):
         print("\n[DB] Sample rankings (SJR):")
         rows = conn.execute(text("""
             SELECT j.display_name, jr.year, jr.value_float
-            FROM journal_ranking jr
-            JOIN journal j        ON j.journal_id = jr.journal_id
-            JOIN ranking_metric m ON m.metric_id  = jr.metric_id
+            FROM "Journal_Ranking" jr
+            JOIN "Journal" j        ON j.journal_id = jr.journal_id
+            JOIN "Ranking_Metric" m ON m.metric_id  = jr.metric_id
             WHERE m.code = 'SJR' AND jr.value_float IS NOT NULL
             ORDER BY jr.value_float DESC
             LIMIT 10

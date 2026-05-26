@@ -49,15 +49,26 @@ def split_issns(v: str):
 def sync_journals(limit: int):
     engine = create_engine(DATABASE_URL)
     
-    # 1. Truy vấn các journal chưa đồng bộ OpenAlex trực tiếp từ bảng journal
+    # 1. Truy vấn các journal chưa đồng bộ OpenAlex trực tiếp từ bảng "Journal"
+    # Sắp xếp ưu tiên các tạp chí có Rank tốt nhất (rank từ 1 trở đi) lên đầu
     query = """
-        SELECT journal_id, display_name, issn
-        FROM journal
-        WHERE openalex_synced_at IS NULL
-        ORDER BY journal_id ASC
+        SELECT j.journal_id, j.display_name, j.issn
+        FROM "Journal" j
+        LEFT JOIN (
+            SELECT DISTINCT ON (source_id) source_id, rank_txt
+            FROM raw_scimago_journal
+            ORDER BY source_id, created_at DESC
+        ) r ON j.source_id = r.source_id
+        WHERE j.openalex_synced_at IS NULL
+        ORDER BY 
+            CASE WHEN r.rank_txt IS NULL OR r.rank_txt = '' THEN 999999 
+                 ELSE CAST(r.rank_txt AS integer) 
+            END ASC, 
+            j.journal_id ASC
     """
     if limit:
         query += f" LIMIT {limit}"
+
 
     with engine.connect() as conn:
         journals = conn.execute(text(query)).fetchall()
@@ -83,7 +94,7 @@ def sync_journals(limit: int):
             print("  -> SKIPPED: No valid ISSNs found for this journal.")
             with engine.begin() as conn:
                 conn.execute(text("""
-                    UPDATE journal
+                    UPDATE "Journal"
                     SET openalex_synced_at = :synced_at
                     WHERE journal_id = :journal_id
                 """), {
@@ -120,7 +131,7 @@ def sync_journals(limit: int):
                         # Cập nhật thông tin vào DB
                         with engine.begin() as conn:
                             conn.execute(text("""
-                                UPDATE journal
+                                UPDATE "Journal"
                                 SET openalex_id = :openalex_id,
                                     homepage_url = :homepage_url,
                                     works_count = :works_count,
@@ -150,7 +161,7 @@ def sync_journals(limit: int):
             # Đánh dấu thời điểm sync thất bại / không thấy để tránh bị quét lại liên tục
             with engine.begin() as conn:
                 conn.execute(text("""
-                    UPDATE journal
+                    UPDATE "Journal"
                     SET openalex_synced_at = :synced_at
                     WHERE journal_id = :journal_id
                 """), {
@@ -166,9 +177,9 @@ def sync_journals(limit: int):
 def cmd_stats(args):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
-        total = conn.execute(text("SELECT COUNT(*) FROM journal")).scalar()
-        synced = conn.execute(text("SELECT COUNT(*) FROM journal WHERE openalex_id IS NOT NULL")).scalar()
-        unsynced = conn.execute(text("SELECT COUNT(*) FROM journal WHERE openalex_synced_at IS NULL")).scalar()
+        total = conn.execute(text('SELECT COUNT(*) FROM "Journal"')).scalar()
+        synced = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE openalex_id IS NOT NULL')).scalar()
+        unsynced = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE openalex_synced_at IS NULL')).scalar()
         
         print("\n[OpenAlex Sync Stats]")
         print(f"  Total journals in DB:    {total:,}")
@@ -179,7 +190,7 @@ def cmd_stats(args):
             print("\n[Latest Synced Journals Sample]")
             rows = conn.execute(text("""
                 SELECT display_name, openalex_id, works_count, cited_by_count, homepage_url
-                FROM journal
+                FROM "Journal"
                 WHERE openalex_id IS NOT NULL
                 ORDER BY openalex_synced_at DESC
                 LIMIT 10
@@ -209,11 +220,15 @@ def cmd_export(args):
             j.homepage_url AS openalex_homepage,
             j.works_count AS openalex_works_count,
             j.cited_by_count AS openalex_cited_by_count,
-            (SELECT raw_json FROM raw_scimago_journal r 
-             WHERE r.source_id = j.source_id 
-             ORDER BY r.created_at DESC LIMIT 1) AS raw_json
-        FROM journal j
+            r.raw_json
+        FROM "Journal" j
+        LEFT JOIN (
+            SELECT DISTINCT ON (source_id) source_id, raw_json
+            FROM raw_scimago_journal
+            ORDER BY source_id, created_at DESC
+        ) r ON r.source_id = j.source_id
     """
+
     
     try:
         with engine.connect() as conn:
@@ -268,6 +283,52 @@ def cmd_export(args):
             df_temp_sjr = pd.to_numeric(df[sjr_col].astype(str).str.replace(",", ".", regex=False), errors='coerce')
             df = df.iloc[df_temp_sjr.sort_values(ascending=False).index]
         
+        # Sắp xếp các cột theo thứ tự khoa học và logic (Định danh -> Chỉ số -> Open Access -> OpenAlex -> Chi tiết)
+        actual_cols = list(df.columns)
+        priority_rules = [
+            lambda c: c.lower() == "rank",
+            lambda c: c.lower() == "sourceid",
+            lambda c: c.lower() == "title",
+            lambda c: c.lower() == "type",
+            lambda c: c.lower() == "issn",
+            lambda c: c.lower() == "publisher",
+            lambda c: c.lower() == "country",
+            lambda c: c.lower() == "region",
+            lambda c: c.lower() == "coverage",
+            lambda c: c.lower() == "sjr",
+            lambda c: c.lower() == "sjr best quartile",
+            lambda c: c.lower() == "h index",
+            lambda c: c.lower() == "open access",
+            lambda c: c.lower() == "open access diamond",
+            lambda c: c.lower() == "openalex id",
+            lambda c: c.lower() == "openalex homepage",
+            lambda c: c.lower() == "openalex works count",
+            lambda c: c.lower() == "openalex cited by count",
+            lambda c: c.lower().startswith("total docs. (") or c.lower().startswith("total docs ("),
+            lambda c: "total docs" in c.lower() and "3years" in c.lower().replace(" ", ""),
+            lambda c: "total refs" in c.lower(),
+            lambda c: "total citations" in c.lower() or "total cites" in c.lower(),
+            lambda c: "citable docs" in c.lower(),
+            lambda c: "citations" in c.lower() and "doc" in c.lower(),
+            lambda c: "ref" in c.lower() and "doc" in c.lower(),
+            lambda c: "%female" in c.lower() or "female" in c.lower(),
+            lambda c: "overton" in c.lower(),
+            lambda c: "areas" in c.lower(),
+            lambda c: "categories" in c.lower(),
+        ]
+        
+        ordered_cols = []
+        # Lấy các cột theo thứ tự ưu tiên
+        for rule in priority_rules:
+            matched = [c for c in actual_cols if rule(c) and c not in ordered_cols]
+            ordered_cols.extend(matched)
+            
+        # Đưa các cột còn lại xuống cuối để đảm bảo xuất ra 100% cột thô
+        remaining = [c for c in actual_cols if c not in ordered_cols]
+        ordered_cols.extend(remaining)
+        
+        df = df[ordered_cols]
+        
         # Select preview columns dynamically
         cols_to_print = []
         for target in ["title", "issn", "publisher", "sjr", "openalex id", "openalex works count"]:
@@ -277,6 +338,7 @@ def cmd_export(args):
                     break
         if not cols_to_print:
             cols_to_print = list(df.columns[:8])
+
             
         # Print preview sample
         limit = args.limit or 10

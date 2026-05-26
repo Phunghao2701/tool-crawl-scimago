@@ -1,5 +1,5 @@
--- Seed dữ liệu ranking_metric từ Scimago
-INSERT INTO ranking_metric (code, display_name, metric_type, description)
+-- Seed dữ liệu "Ranking_Metric" từ Scimago
+INSERT INTO "Ranking_Metric" (code, display_name, metric_type, description)
 VALUES
     ('RANK',                    'Rank',                      'INTEGER',  'SCImago journal ranking position'),
     ('SJR',                     'SJR Score',                 'SCORE',    'SCImago Journal Rank score'),
