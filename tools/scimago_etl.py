@@ -373,10 +373,10 @@ def normalize(engine, batch_id: str, year: int):
             j_row = conn.execute(text("""
                 INSERT INTO journal
                     (source_id, publisher_id, country_id, region_id,
-                     display_name, type, is_open_access, is_oa_diamond)
+                     display_name, type, is_open_access, is_oa_diamond, issn)
                 VALUES
                     (:src_id, :pub_id, :country_id, :region_id,
-                     :display_name, :type, :is_oa, :is_dia)
+                     :display_name, :type, :is_oa, :is_dia, :issn)
                 ON CONFLICT (source_id) DO UPDATE SET
                     publisher_id  = EXCLUDED.publisher_id,
                     country_id    = EXCLUDED.country_id,
@@ -384,7 +384,8 @@ def normalize(engine, batch_id: str, year: int):
                     display_name  = EXCLUDED.display_name,
                     type          = EXCLUDED.type,
                     is_open_access = EXCLUDED.is_open_access,
-                    is_oa_diamond  = EXCLUDED.is_oa_diamond
+                    is_oa_diamond  = EXCLUDED.is_oa_diamond,
+                    issn          = EXCLUDED.issn
                 RETURNING journal_id
             """), {
                 "src_id":      src_id,
@@ -395,16 +396,9 @@ def normalize(engine, batch_id: str, year: int):
                 "type":        (raw["type"] or "").strip() or None,
                 "is_oa":       norm_bool(raw["open_access"]),
                 "is_dia":      norm_bool(raw["open_access_diamond"]),
+                "issn":        (raw["issn"] or "").strip() or None,
             }).fetchone()
             jid = j_row[0]
-
-            # ISSN
-            for issn in split_issns(raw["issn"]):
-                conn.execute(text("""
-                    INSERT INTO journal_issn (journal_id, issn)
-                    VALUES (:jid, :issn)
-                    ON CONFLICT (journal_id, issn) DO NOTHING
-                """), {"jid": jid, "issn": issn})
 
             # Subject categories
             categories = parse_categories(raw["categories"])

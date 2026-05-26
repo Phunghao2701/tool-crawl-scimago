@@ -33,18 +33,28 @@ def get_headers():
     }
 
 
+def split_issns(v: str):
+    if not v:
+        return []
+    import re
+    parts = re.split(r"[,;/\s]+", v)
+    cleaned = []
+    for p in parts:
+        p = p.strip().replace("-", "").upper()
+        if re.match(r"^\d{7}[\dX]$", p):
+            cleaned.append(p)
+    return cleaned
+
+
 def sync_journals(limit: int):
     engine = create_engine(DATABASE_URL)
     
-    # 1. Truy vấn các journal chưa đồng bộ OpenAlex hoặc đồng bộ lâu nhất
+    # 1. Truy vấn các journal chưa đồng bộ OpenAlex trực tiếp từ bảng journal
     query = """
-        SELECT j.journal_id, j.display_name, 
-               ARRAY_AGG(ji.issn) AS issns
-        FROM journal j
-        JOIN journal_issn ji ON j.journal_id = ji.journal_id
-        WHERE j.openalex_synced_at IS NULL
-        GROUP BY j.journal_id, j.display_name
-        ORDER BY j.journal_id ASC
+        SELECT journal_id, display_name, issn
+        FROM journal
+        WHERE openalex_synced_at IS NULL
+        ORDER BY journal_id ASC
     """
     if limit:
         query += f" LIMIT {limit}"
@@ -64,10 +74,25 @@ def sync_journals(limit: int):
     for idx, journal in enumerate(journals, 1):
         journal_id = journal[0]
         display_name = journal[1]
-        issns = journal[2]
+        issn_str = journal[2] or ""
+        issns = split_issns(issn_str)
         
-        print(f"[{idx}/{len(journals)}] Syncing: {display_name} (ISSNs: {', '.join(issns)})")
+        print(f"[{idx}/{len(journals)}] Syncing: {display_name} (ISSNs: {', '.join(issns) if issns else 'None'})")
         
+        if not issns:
+            print("  -> SKIPPED: No valid ISSNs found for this journal.")
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    UPDATE journal
+                    SET openalex_synced_at = :synced_at
+                    WHERE journal_id = :journal_id
+                """), {
+                    "synced_at": datetime.utcnow(),
+                    "journal_id": journal_id
+                })
+            failed_count += 1
+            continue
+
         success = False
         # Gọi thử từng ISSN cho tới khi tìm thấy tạp chí trên OpenAlex
         for issn in issns:
@@ -179,6 +204,7 @@ def cmd_export(args):
         SELECT 
             j.source_id AS scimago_id,
             j.display_name AS title,
+            j.issn,
             j.type,
             p.display_name AS publisher,
             z_c.name AS country,
@@ -214,16 +240,33 @@ def cmd_export(args):
         # In ra màn hình mẫu preview
         limit = args.limit or 10
         print(f"\n[export] Enriched Journals (Top {limit} by SJR):")
-        cols_to_print = ["title", "publisher", "country", "last_sjr", "last_best_quartile", "works_count", "cited_by_count"]
+        cols_to_print = ["title", "issn", "publisher", "country", "last_sjr", "last_best_quartile", "works_count", "cited_by_count"]
         print(df[cols_to_print].head(limit).to_string(index=False))
         
         # Lưu ra file CSV
         output_file = args.output
-        # Tạo thư mục nếu chưa có
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
         df.to_csv(output_file, index=False, encoding="utf-8-sig")
-        print(f"\n[OK] Exported {len(df)} enriched records to: {output_file}")
+        print(f"\n[OK] Exported {len(df)} enriched records to CSV: {output_file}")
         
+        # Xuất ra file Excel (.xlsx)
+        excel_file = os.path.splitext(output_file)[0] + ".xlsx"
+        try:
+            df.to_excel(excel_file, index=False)
+            print(f"[OK] Exported {len(df)} enriched records to Excel: {excel_file}")
+        except (ImportError, ModuleNotFoundError):
+            print("[INFO] Installing openpyxl for Excel output...")
+            try:
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+                # Import lại pandas engine sau khi cài đặt openpyxl
+                df.to_excel(excel_file, index=False)
+                print(f"[OK] Exported {len(df)} enriched records to Excel: {excel_file}")
+            except Exception as e_install:
+                print(f"[WARNING] Failed to install openpyxl or save Excel: {e_install}")
+        except Exception as e_excel:
+            print(f"[WARNING] Could not save Excel file: {e_excel}")
+            
     except Exception as e:
         print(f"[ERROR] Failed to export data: {e}")
 

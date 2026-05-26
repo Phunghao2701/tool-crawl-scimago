@@ -48,18 +48,8 @@ CREATE TABLE IF NOT EXISTS journal (
     openalex_synced_at  TIMESTAMP,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_journal_source_id UNIQUE (source_id),
-    CONSTRAINT uq_journal_openalex_id UNIQUE (openalex_id)
-);
-
--- ---------------------------------------------------------------
--- journal_issn
--- ---------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS journal_issn (
-    journal_issn_id BIGSERIAL PRIMARY KEY,
-    journal_id      BIGINT NOT NULL REFERENCES journal(journal_id) ON DELETE CASCADE,
-    issn            TEXT   NOT NULL,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_journal_issn UNIQUE (journal_id, issn)
+    CONSTRAINT uq_journal_openalex_id UNIQUE (openalex_id),
+    issn            TEXT
 );
 
 -- ---------------------------------------------------------------
