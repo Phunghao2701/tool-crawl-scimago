@@ -46,13 +46,51 @@ def split_issns(v: str):
     return cleaned
 
 
+def scrape_scimago_scope_with_driver(driver, source_id: str, is_first: bool):
+    if not source_id:
+        return None, is_first
+    
+    url = f"https://www.scimagojr.com/journalsearch.php?q={source_id}&tip=sid&clean=0"
+    try:
+        from selenium.webdriver.common.by import By
+        driver.get(url)
+        # Đợi cho trang load và vượt qua Cloudflare Turnstile
+        # Lần đầu tiên chờ lâu hơn để cookie session ổn định, các lần sau load nhanh tức thì
+        wait_time = 8.0 if is_first else 1.5
+        time.sleep(wait_time)
+        
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        lines = [line.strip() for line in body_text.split("\n")]
+        
+        scope_text = ""
+        for i, line in enumerate(lines):
+            if line == "Scope":
+                if i + 1 < len(lines):
+                    scope_text = lines[i+1]
+                break
+        
+        if scope_text:
+            return scope_text, False
+    except Exception as e:
+        print(f"    [Scope Scrape Error] Failed to scrape Scope for source_id {source_id}: {e}")
+    return None, is_first
+
+
+def generate_fallback_scope(source_data: dict):
+    topics = source_data.get("topics", [])
+    topic_names = [t.get("display_name") for t in topics if t.get("display_name")]
+    if topic_names:
+        return f"This journal covers topics and research areas in: {', '.join(topic_names[:5])}."
+    return None
+
+
 def sync_journals(limit: int):
     engine = create_engine(DATABASE_URL)
     
     # 1. Truy vấn các journal chưa đồng bộ OpenAlex trực tiếp từ bảng "Journal"
     # Sắp xếp ưu tiên các tạp chí có Rank tốt nhất (rank từ 1 trở đi) lên đầu
     query = """
-        SELECT j.journal_id, j.display_name, j.issn
+        SELECT j.journal_id, j.display_name, j.issn, j.source_id
         FROM "Journal" j
         LEFT JOIN (
             SELECT DISTINCT ON (source_id) source_id, rank_txt
@@ -77,100 +115,142 @@ def sync_journals(limit: int):
         print("[INFO] No journals need synchronization.")
         return
 
-    print(f"[sync] Starting synchronization for {len(journals)} journals...")
+    # Khởi tạo Selenium Chrome Driver
+    print("\nInitializing Selenium Chrome Driver for Scimago Scope scraping...")
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
     
-    synced_count = 0
-    failed_count = 0
+    options = webdriver.ChromeOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    options.add_argument("--log-level=3")
+    options.add_argument("--silent")
     
-    for idx, journal in enumerate(journals, 1):
-        journal_id = journal[0]
-        display_name = journal[1]
-        issn_str = journal[2] or ""
-        issns = split_issns(issn_str)
-        
-        print(f"[{idx}/{len(journals)}] Syncing: {display_name} (ISSNs: {', '.join(issns) if issns else 'None'})")
-        
-        if not issns:
-            print("  -> SKIPPED: No valid ISSNs found for this journal.")
-            with engine.begin() as conn:
-                conn.execute(text("""
-                    UPDATE "Journal"
-                    SET openalex_synced_at = :synced_at
-                    WHERE journal_id = :journal_id
-                """), {
-                    "synced_at": datetime.utcnow(),
-                    "journal_id": journal_id
-                })
-            failed_count += 1
-            continue
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    is_first_scimago_request = True
 
-        success = False
-        # Gọi thử từng ISSN cho tới khi tìm thấy tạp chí trên OpenAlex
-        for issn in issns:
-            # Format ISSN để khớp định dạng (ví dụ: xxxx-xxxx)
-            formatted_issn = issn
-            if len(issn) == 8:
-                formatted_issn = f"{issn[:4]}-{issn[4:]}"
-                
-            url = f"https://api.openalex.org/sources?filter=issn:{formatted_issn}"
-            try:
-                # Rate limit lịch sự
-                time.sleep(0.2)
-                
-                response = requests.get(url, headers=get_headers(), timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get("results", [])
-                    if results:
-                        source_data = results[0]
-                        openalex_id = source_data.get("id")
-                        homepage_url = source_data.get("homepage_url")
-                        works_count = source_data.get("works_count")
-                        cited_by_count = source_data.get("cited_by_count")
-                        
-                        # Cập nhật thông tin vào DB
-                        with engine.begin() as conn:
-                            conn.execute(text("""
-                                UPDATE "Journal"
-                                SET openalex_id = :openalex_id,
-                                    homepage_url = :homepage_url,
-                                    works_count = :works_count,
-                                    cited_by_count = :cited_by_count,
-                                    openalex_synced_at = :synced_at
-                                WHERE journal_id = :journal_id
-                            """), {
-                                "openalex_id": openalex_id,
-                                "homepage_url": homepage_url,
-                                "works_count": works_count,
-                                "cited_by_count": cited_by_count,
-                                "synced_at": datetime.utcnow(),
-                                "journal_id": journal_id
-                            })
-                        
-                        print(f"  -> SUCCESS: OpenAlex ID={openalex_id}, Works={works_count}, Cites={cited_by_count}")
-                        success = True
-                        break # Đã tìm thấy qua ISSN này, chuyển sang tạp chí khác
-                else:
-                    print(f"  -> API Error for ISSN {formatted_issn}: HTTP {response.status_code}")
-            except Exception as e:
-                print(f"  -> Request Exception for ISSN {formatted_issn}: {e}")
+    try:
+        print(f"[sync] Starting synchronization for {len(journals)} journals...")
         
-        if success:
-            synced_count += 1
-        else:
-            # Đánh dấu thời điểm sync thất bại / không thấy để tránh bị quét lại liên tục
-            with engine.begin() as conn:
-                conn.execute(text("""
-                    UPDATE "Journal"
-                    SET openalex_synced_at = :synced_at
-                    WHERE journal_id = :journal_id
-                """), {
-                    "synced_at": datetime.utcnow(),
-                    "journal_id": journal_id
-                })
-            print("  -> FAILED: Journal not found or API error on all ISSNs.")
-            failed_count += 1
+        synced_count = 0
+        failed_count = 0
+        
+        for idx, journal in enumerate(journals, 1):
+            journal_id = journal[0]
+            display_name = journal[1]
+            issn_str = journal[2] or ""
+            source_id = journal[3]
+            issns = split_issns(issn_str)
             
+            print(f"[{idx}/{len(journals)}] Syncing: {display_name} (ISSNs: {', '.join(issns) if issns else 'None'})")
+            
+            if not issns:
+                print("  -> SKIPPED: No valid ISSNs found for this journal.")
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        UPDATE "Journal"
+                        SET openalex_synced_at = :synced_at
+                        WHERE journal_id = :journal_id
+                    """), {
+                        "synced_at": datetime.utcnow(),
+                        "journal_id": journal_id
+                    })
+                failed_count += 1
+                continue
+
+            success = False
+            # Gọi thử từng ISSN cho tới khi tìm thấy tạp chí trên OpenAlex
+            for issn in issns:
+                # Format ISSN để khớp định dạng (ví dụ: xxxx-xxxx)
+                formatted_issn = issn
+                if len(issn) == 8:
+                    formatted_issn = f"{issn[:4]}-{issn[4:]}"
+                    
+                url = f"https://api.openalex.org/sources?filter=issn:{formatted_issn}"
+                try:
+                    # Rate limit lịch sự
+                    time.sleep(0.2)
+                    
+                    response = requests.get(url, headers=get_headers(), timeout=15)
+                    if response.status_code == 200:
+                        data = response.json()
+                        results = data.get("results", [])
+                        if results:
+                            source_data = results[0]
+                            openalex_id = source_data.get("id")
+                            homepage_url = source_data.get("homepage_url")
+                            works_count = source_data.get("works_count")
+                            cited_by_count = source_data.get("cited_by_count")
+                            
+                            # Cào Scope trực tiếp từ Scimago
+                            scope = None
+                            if source_id:
+                                print(f"  -> Scraping Scope from Scimago (source_id: {source_id})...")
+                                scope, is_first_scimago_request = scrape_scimago_scope_with_driver(
+                                    driver, source_id, is_first_scimago_request
+                                )
+                            
+                            if not scope:
+                                print("     (Scimago Scope not found. Fallback to OpenAlex topics)")
+                                scope = generate_fallback_scope(source_data)
+                            
+                            # Cập nhật thông tin vào DB
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    UPDATE "Journal"
+                                    SET openalex_id = :openalex_id,
+                                        homepage_url = :homepage_url,
+                                        works_count = :works_count,
+                                        cited_by_count = :cited_by_count,
+                                        scope = :scope,
+                                        openalex_synced_at = :synced_at
+                                    WHERE journal_id = :journal_id
+                                """), {
+                                    "openalex_id": openalex_id,
+                                    "homepage_url": homepage_url,
+                                    "works_count": works_count,
+                                    "cited_by_count": cited_by_count,
+                                    "scope": scope,
+                                    "synced_at": datetime.utcnow(),
+                                    "journal_id": journal_id
+                                })
+                            
+                            print(f"  -> SUCCESS: OpenAlex ID={openalex_id}, Works={works_count}, Cites={cited_by_count}")
+                            if scope:
+                                preview_scope = scope[:60] + "..." if len(scope) > 63 else scope
+                                print(f"     Scope: {preview_scope}")
+                            success = True
+                            break # Đã tìm thấy qua ISSN này, chuyển sang tạp chí khác
+                    else:
+                        print(f"  -> API Error for ISSN {formatted_issn}: HTTP {response.status_code}")
+                except Exception as e:
+                    print(f"  -> Request Exception for ISSN {formatted_issn}: {e}")
+            
+            if success:
+                synced_count += 1
+            else:
+                # Đánh dấu thời điểm sync thất bại / không thấy để tránh bị quét lại liên tục
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        UPDATE "Journal"
+                        SET openalex_synced_at = :synced_at
+                        WHERE journal_id = :journal_id
+                    """), {
+                        "synced_at": datetime.utcnow(),
+                        "journal_id": journal_id
+                    })
+                print("  -> FAILED: Journal not found or API error on all ISSNs.")
+                failed_count += 1
+    finally:
+        print("\nClosing Selenium Chrome Driver...")
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        
     print(f"\n[sync] Finished! Synced: {synced_count}, Failed/Not found: {failed_count}")
 
 
@@ -220,6 +300,7 @@ def cmd_export(args):
             j.homepage_url AS openalex_homepage,
             j.works_count AS openalex_works_count,
             j.cited_by_count AS openalex_cited_by_count,
+            j.scope AS openalex_scope,
             r.raw_json
         FROM "Journal" j
         LEFT JOIN (
@@ -264,6 +345,7 @@ def cmd_export(args):
             raw_dict["OpenAlex Homepage"] = row.openalex_homepage
             raw_dict["OpenAlex Works Count"] = row.openalex_works_count
             raw_dict["OpenAlex Cited By Count"] = row.openalex_cited_by_count
+            raw_dict["Scope"] = row.openalex_scope
             
             records.append(raw_dict)
             
@@ -304,6 +386,7 @@ def cmd_export(args):
             lambda c: c.lower() == "openalex homepage",
             lambda c: c.lower() == "openalex works count",
             lambda c: c.lower() == "openalex cited by count",
+            lambda c: c.lower() == "scope",
             lambda c: c.lower().startswith("total docs. (") or c.lower().startswith("total docs ("),
             lambda c: "total docs" in c.lower() and "3years" in c.lower().replace(" ", ""),
             lambda c: "total refs" in c.lower(),

@@ -102,8 +102,10 @@ Do Scimago chặn bot tự động tải file rất mạnh, bạn cần tải fi
 
 ---
 
-### Bước 2: Đồng bộ hóa metadata chi tiết từ OpenAlex
-Bổ sung các trường thông tin: website tạp chí, tổng số bài báo công bố (`works_count`), tổng số lượt trích dẫn (`cited_by_count`).
+### Bước 2: Đồng bộ hóa metadata & Scope chi tiết từ OpenAlex & Scimago
+Bổ sung các trường thông tin: website tạp chí, tổng số bài báo công bố (`works_count`), tổng số lượt trích dẫn (`cited_by_count`), và đặc biệt là **Scope** (mô tả phạm vi hoạt động của tạp chí):
+*   **Cơ chế lấy Scope khoa học & bypass Cloudflare:** Hệ thống sử dụng Selenium khởi tạo một trình duyệt Chrome (headed) để tự động vượt qua cơ chế Cloudflare Turnstile của Scimago. Sau đó, nó tự động trích xuất phần mô tả Scope thực tế ngay trên trang chi tiết Scimago dựa theo `source_id` của tạp chí.
+*   **Cơ chế Fallback thông minh:** Đối với các tạp chí nhỏ chưa có thông tin Scope trên Scimago, hệ thống tự động tổng hợp danh sách các lĩnh vực nghiên cứu chính (`topics`) từ OpenAlex để tạo thành Scope mô tả có ý nghĩa (ví dụ: *"This journal covers topics and research areas in: Monetary Policy, Macroeconomics..."*).
 
 > 💡 **Cơ chế Ưu tiên theo Thứ hạng (Rank-based Priority):** 
 > Thay vì đồng bộ ngẫu nhiên, hệ thống đã được tối ưu để **tự động ưu tiên đồng bộ các tạp chí có thứ hạng Rank cao nhất (SJR lớn nhất) lên đầu trước**. Điều này giúp bạn chỉ cần chạy sync một lượng nhỏ (ví dụ 50, 100 tạp chí), thông tin OpenAlex đã lập tức xuất hiện đầy đủ ở các hàng đầu tiên của file Excel báo cáo mà không cần đợi sync hết cả 32,000 dòng.
@@ -140,7 +142,7 @@ Xuất bảng kết hợp đầy đủ thông tin từ Scimago (Rank, SJR Score,
 
 > 🔬 **Bố cục cột khoa học (Columns Layout):**
 > Thứ tự các cột trong file xuất ra được tự động sắp xếp theo nhóm logic từ trái sang phải để tối ưu hóa trải nghiệm đọc:
-> `Định danh tạp chí` (Rank, Title, Issn, Publisher, Country, Region...) ➔ `Chỉ số Scimago chính` (SJR, Quartile, H index) ➔ `Open Access` ➔ `Thông tin OpenAlex` (ID, Homepage, Works, Citations) ➔ `Chỉ số Scimago chi tiết` (Total Docs, Total Citations...) ➔ `Phân loại ngành` (Areas, Categories).
+> `Định danh tạp chí` (Rank, Title, Issn, Publisher, Country, Region...) ➔ `Chỉ số Scimago chính` (SJR, Quartile, H index) ➔ `Open Access` ➔ `Thông tin OpenAlex` (ID, Homepage, Works, Citations, Scope) ➔ `Chỉ số Scimago chi tiết` (Total Docs, Total Citations...) ➔ `Phân loại ngành` (Areas, Categories).
 
 > ⚠️ **Lưu ý sửa lỗi Permission Denied (Errno 13):**
 > Khi bạn đang mở file `enriched_journals.xlsx` hoặc `enriched_journals.csv` bằng Microsoft Excel hoặc ứng dụng khác, hệ điều hành Windows sẽ khóa file lại và chặn quyền ghi đè của Python, dẫn đến lỗi `Permission denied`. 
