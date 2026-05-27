@@ -624,11 +624,11 @@ def cmd_export_authors(args):
 def sync_works(limit: int):
     engine = create_engine(DATABASE_URL)
     
-    # 1. Lấy danh sách các Journal đã được đồng bộ từ OpenAlex
+    # 1. Lấy danh sách các Journal đã được đồng bộ từ OpenAlex nhưng chưa đồng bộ bài viết
     query_journals = """
         SELECT journal_id, openalex_id, display_name
         FROM "Journal"
-        WHERE openalex_id IS NOT NULL
+        WHERE openalex_id IS NOT NULL AND works_synced_at IS NULL
         ORDER BY journal_id ASC
     """
     with engine.connect() as conn:
@@ -960,6 +960,17 @@ def sync_works(limit: int):
                 new_query = urllib_parse.urlencode(query_params, doseq=True)
                 current_url = parsed._replace(query=new_query).geturl()
                 page_idx += 1
+                
+            # Cập nhật thời điểm đồng bộ bài báo thành công để lần sau không quét lại
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    UPDATE "Journal"
+                    SET works_synced_at = :synced_at
+                    WHERE journal_id = :journal_id
+                """), {
+                    "synced_at": datetime.now(timezone.utc),
+                    "journal_id": journal_uuid
+                })
                 
             print(f"  -> SUCCESS: Synced all works for Journal: {journal_name}.")
         except Exception as e:

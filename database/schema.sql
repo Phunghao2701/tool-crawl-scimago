@@ -174,7 +174,8 @@ CREATE TABLE "Journal" (
   "homepage_url" varchar,
   "works_count" int,
   "cited_by_count" int,
-  "openalex_synced_at" timestamp
+  "openalex_synced_at" timestamp,
+  "works_synced_at" timestamp
 );
 
 -- 11. Bảng Journal_Subject_Category (Many-to-Many)
