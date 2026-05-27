@@ -11,6 +11,31 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/1-schema.sql
+      - ./database/seed_ranking_metric.sql:/docker-entrypoint-initdb.d/2-seed_ranking_metric.sql
+
+  app:
+    build: .
+    container_name: scientific_journal_app
+    restart: always
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:1234@postgres:5432/scientific_journal_db
+      - OPENALEX_EMAIL=academic-etl@example.com
+    depends_on:
+      - postgres
+    command: >
+      sh -c "python tools/auto_init.py && tail -f /dev/null"
+
+  adminer:
+    image: adminer:latest
+    container_name: scientific_journal_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
 
 volumes:
   postgres_data:

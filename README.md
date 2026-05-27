@@ -44,6 +44,39 @@ Hệ thống ETL (Extract, Transform, Load) nội bộ được viết bằng Py
 
 ---
 
+## 🐳 Hướng dẫn chạy tự động hoàn toàn bằng Docker
+
+Cách này phù hợp khi chia sẻ dự án cho người khác. Người dùng **chỉ cần cài đặt Docker** là có thể chạy toàn bộ tiến trình ETL và xem kết quả trực tiếp trên giao diện Web mà không cần cài đặt Python, PostgreSQL, hay chạy bất kỳ câu lệnh nào khác.
+
+### 1. Khởi động hệ thống
+Mở terminal tại thư mục dự án và chạy câu lệnh duy nhất:
+```bash
+docker compose up -d --build
+```
+
+### 2. Xem dữ liệu trực quan trên giao diện Web
+Sau khi chạy lệnh trên, hệ thống sẽ tự động thực hiện tuần tự các bước sau trong chế độ nền:
+1. **Thiết lập database & bảng dữ liệu** (`schema.sql` và `seed_ranking_metric.sql`).
+2. **Tự động import** dữ liệu Scimago từ file mẫu `data/scimagojr 2025.csv`.
+3. **Tự động đồng bộ** thông tin làm giàu từ OpenAlex (cho 50 tạp chí hàng đầu).
+
+Bạn không cần tạo file Excel báo cáo mà có thể truy cập thẳng vào giao diện Web quản lý Database:
+*   **Địa chỉ**: [http://localhost:8080](http://localhost:8080) (Sử dụng công cụ Adminer siêu nhẹ)
+*   **Thông tin đăng nhập**:
+    *   **Hệ quản trị (System)**: `PostgreSQL`
+    *   **Máy chủ (Server)**: `postgres`
+    *   **Tên người dùng (Username)**: `postgres`
+    *   **Mật khẩu (Password)**: `1234`
+    *   **Cơ sở dữ liệu (Database)**: `scientific_journal_db`
+
+### 3. (Tùy chọn) Chạy thủ công các lệnh ETL trong Docker
+Nếu sau này bạn muốn import file dữ liệu mới hoặc đồng bộ thêm tạp chí:
+*   **Import file Scimago mới**: `docker compose exec app python tools/scimago_etl.py import --file data/ten_file_moi.csv --year 2026`
+*   **Đồng bộ thêm OpenAlex**: `docker compose exec app python tools/openalex_sync.py sync --limit 100`
+*   **Xem thống kê số lượng dữ liệu**: `docker compose exec app python tools/scimago_etl.py stats`
+
+---
+
 ## 🚀 Hướng dẫn cài đặt & Khởi động thủ công (Manual Setup)
 
 ### 1. Chuẩn bị môi trường Python
