@@ -92,10 +92,10 @@ call :check_db
 echo ==========================================
 echo  3. SYNC OPENALEX DATA (ALL-IN-ONE)
 echo ==========================================
-set /p j_limit="1. Nhap gioi han so tap chi can sync (nhan Enter de sync 50): "
+set /p j_limit="1. Nhap gioi han so tap chi can sync (nhan Enter de sync 50, nhap 0 de sync TOAN BO): "
 if "%j_limit%"=="" set j_limit=50
 
-set /p w_limit="2. Nhap gioi han bai viet can sync moi tac gia (nhan Enter de sync 20): "
+set /p w_limit="2. Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 20, nhap 0 de sync TOAN BO): "
 if "%w_limit%"=="" set w_limit=20
 
 echo.
