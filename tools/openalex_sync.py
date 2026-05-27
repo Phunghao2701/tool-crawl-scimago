@@ -44,6 +44,28 @@ def get_headers():
     }
 
 
+def check_insufficient_budget(resp):
+    if resp.status_code == 429:
+        try:
+            err_data = resp.json()
+            if "Insufficient budget" in err_data.get("message", "") or "pricing" in err_data.get("message", ""):
+                print("\n" + "="*80)
+                print("[CRITICAL] OPENALEX API ERROR: INSUFFICIENT BUDGET (HẾT NGÂN SÁCH MIỄN PHÍ)")
+                print("="*80)
+                print("Chi tiết lỗi từ OpenAlex:")
+                print(f"  {err_data.get('message')}")
+                print("\nCách khắc phục nhanh:")
+                print("  1. Mở file .env và XÓA (hoặc để trống) dòng OPENALEX_API_KEY.")
+                print("     (Để trống để sử dụng chế độ Polite Pool miễn phí thay vì tài khoản tính phí)")
+                print("  2. THAY ĐỔI ĐỊA CHỈ IP MẠNG CỦA BẠN (bằng cách kết nối VPN hoặc phát 4G từ điện thoại).")
+                print("     (Bắt buộc phải đổi IP vì OpenAlex đã cache IP của bạn gắn liền với tài khoản hết tiền kia)")
+                print("  3. Sau đó chạy lại pipeline.")
+                print("="*80 + "\n")
+                sys.exit(1)
+        except Exception:
+            pass
+
+
 def safe_get(url, headers=None, timeout=15):
     import urllib3
     import urllib.parse as urllib_parse
@@ -75,21 +97,23 @@ def safe_get(url, headers=None, timeout=15):
             # Thử gọi kiểm tra SSL thông thường trước
             resp = requests.get(url, headers=headers, timeout=timeout)
             if resp.status_code == 429:
+                check_insufficient_budget(resp)
                 print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s before retry {attempt+1}/{retries}...")
                 time.sleep(10)
                 continue
             return resp
-        except BaseException as e:
-            # Bắt tất cả lỗi (kể cả lỗi SSL context của python 3.14 pre-release)
+        except Exception as e:
+            # Bắt các lỗi kết nối/SSL
             print(f"  [SSL/Connection Warning] Attempt {attempt+1}/{retries} failed: {e}. Retrying with verify=False...")
             try:
                 resp = requests.get(url, headers=headers, timeout=timeout, verify=False)
                 if resp.status_code == 429:
+                    check_insufficient_budget(resp)
                     print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s...")
                     time.sleep(10)
                     continue
                 return resp
-            except BaseException as e_inner:
+            except Exception as e_inner:
                 print(f"  [Error] Fallback verify=False failed: {e_inner}")
                 if attempt < retries - 1:
                     time.sleep(3)
@@ -145,7 +169,6 @@ def sync_journals(limit: int):
     if limit:
         query += f" LIMIT {limit}"
 
-
     with engine.connect() as conn:
         journals = conn.execute(text(query)).fetchall()
 
@@ -153,124 +176,168 @@ def sync_journals(limit: int):
         print("[INFO] No journals need synchronization.")
         return
 
-    try:
-        print(f"[sync] Starting synchronization for {len(journals)} journals...")
+    print(f"[sync] Starting bulk synchronization for {len(journals)} journals...")
+    
+    # Xây dựng bản đồ mapping ISSN -> journal info
+    issn_to_journals = {}
+    journal_issns = {} # journal_id -> list of clean issns
+    journal_info = {}  # journal_id -> (display_name, source_id)
+    
+    for journal in journals:
+        journal_id = journal[0]
+        display_name = journal[1]
+        issn_str = journal[2] or ""
+        source_id = journal[3]
         
-        synced_count = 0
-        failed_count = 0
-        consecutive_429 = 0
+        issns = split_issns(issn_str)
+        journal_info[journal_id] = (display_name, source_id)
+        if not issns:
+            # Đánh dấu những journal không có ISSN là đã sync (thất bại) để bỏ qua lần sau
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    UPDATE "Journal"
+                    SET openalex_synced_at = :synced_at
+                    WHERE journal_id = :journal_id
+                """), {
+                    "synced_at": datetime.now(timezone.utc),
+                    "journal_id": journal_id
+                })
+            continue
+            
+        journal_issns[journal_id] = issns
+        for issn in issns:
+            if issn not in issn_to_journals:
+                issn_to_journals[issn] = []
+            issn_to_journals[issn].append(journal_id)
+            
+    # Lấy danh sách tất cả các ISSN cần quét
+    all_issns = list(issn_to_journals.keys())
+    if not all_issns:
+        print("[INFO] No valid ISSNs to query on OpenAlex.")
+        return
         
-        for idx, journal in enumerate(journals, 1):
-            journal_id = journal[0]
-            display_name = journal[1]
-            issn_str = journal[2] or ""
-            source_id = journal[3]
-            issns = split_issns(issn_str)
+    print(f"[sync] Prepared {len(all_issns)} unique ISSNs to query in chunks of 50...")
+    
+    synced_journal_ids = set()
+    synced_count = 0
+    failed_count = 0
+    
+    # Chia nhỏ thành các chunk size 50
+    chunk_size = 50
+    for i in range(0, len(all_issns), chunk_size):
+        chunk = all_issns[i:i+chunk_size]
+        print(f"\n[sync] Processing chunk {i//chunk_size + 1}/{(len(all_issns)-1)//chunk_size + 1} ({len(chunk)} ISSNs)...")
+        
+        # Tạo filter OR
+        formatted_issns = []
+        for issn in chunk:
+            if len(issn) == 8:
+                formatted_issns.append(f"{issn[:4]}-{issn[4:]}")
+            else:
+                formatted_issns.append(issn)
+                
+        filter_str = "|".join(formatted_issns)
+        url = f"https://api.openalex.org/sources?filter=issn:{filter_str}&per_page=100"
+        
+        # Thử gọi API (safe_get có cơ chế retry 3 lần)
+        time.sleep(0.5) # Lịch sự tránh rate limit
+        resp = safe_get(url, timeout=20)
+        
+        if resp.status_code != 200:
+            print(f"  [Error] Failed to fetch chunk from OpenAlex. HTTP {resp.status_code}")
+            continue
             
-            print(f"[{idx}/{len(journals)}] Syncing: {display_name} (ISSNs: {', '.join(issns) if issns else 'None'})")
+        data = resp.json()
+        results = data.get("results", [])
+        print(f"  -> OpenAlex returned {len(results)} sources matching filter.")
+        
+        # Tập hợp các journal_id tìm thấy trong chunk này
+        chunk_synced_ids = set()
+        
+        for source_data in results:
+            openalex_id = source_data.get("id")
+            homepage_url = source_data.get("homepage_url")
+            works_count = source_data.get("works_count")
+            cited_by_count = source_data.get("cited_by_count")
+            publisher_name = source_data.get("publisher")
             
-            if not issns:
-                print("  -> SKIPPED: No valid ISSNs found for this journal.")
+            # Lấy tất cả các ISSN mà OpenAlex ghi nhận cho source này (trường "issn" và "issn_l")
+            source_issns = source_data.get("issn", [])
+            if not isinstance(source_issns, list):
+                source_issns = [source_issns] if source_issns else []
+            issn_l = source_data.get("issn_l")
+            if issn_l and issn_l not in source_issns:
+                source_issns.append(issn_l)
+                
+            # Chuẩn hóa để đối chiếu
+            clean_source_issns = []
+            for s_issn in source_issns:
+                clean_s = s_issn.replace("-", "").upper()
+                clean_source_issns.append(clean_s)
+                
+            # Thử map với journal trong DB của chúng ta thông qua các ISSN này
+            matched_journal_ids = set()
+            for s_issn in clean_source_issns:
+                if s_issn in issn_to_journals:
+                    for j_id in issn_to_journals[s_issn]:
+                        matched_journal_ids.add(j_id)
+                        
+            # Cập nhật từng journal tìm thấy
+            for j_id in matched_journal_ids:
+                if j_id in synced_journal_ids:
+                    continue
+                    
+                display_name = journal_info[j_id][0]
+                
+                # Đồng bộ Publisher
+                publisher_uuid = None
+                if publisher_name:
+                    with engine.begin() as conn:
+                        pub_row = conn.execute(text("""
+                            SELECT publisher_id FROM "Publisher" WHERE display_name = :name
+                        """), {"name": publisher_name}).fetchone()
+                        if pub_row:
+                            publisher_uuid = pub_row[0]
+                        else:
+                            publisher_uuid = conn.execute(text("""
+                                INSERT INTO "Publisher" (display_name)
+                                VALUES (:name)
+                                RETURNING publisher_id
+                            """), {"name": publisher_name}).scalar()
+                            
+                # Cập nhật Journal
                 with engine.begin() as conn:
                     conn.execute(text("""
                         UPDATE "Journal"
-                        SET openalex_synced_at = :synced_at
+                        SET openalex_id = :openalex_id,
+                            homepage_url = :homepage_url,
+                            works_count = :works_count,
+                            cited_by_count = :cited_by_count,
+                            publisher_id = COALESCE(:publisher_uuid, publisher_id),
+                            openalex_synced_at = :synced_at
                         WHERE journal_id = :journal_id
                     """), {
+                        "openalex_id": openalex_id,
+                        "homepage_url": homepage_url,
+                        "works_count": works_count,
+                        "cited_by_count": cited_by_count,
+                        "publisher_uuid": publisher_uuid,
                         "synced_at": datetime.now(timezone.utc),
-                        "journal_id": journal_id
+                        "journal_id": j_id
                     })
-                failed_count += 1
-                continue
-
-            success = False
-            has_429 = False
-            # Gọi thử từng ISSN cho tới khi tìm thấy tạp chí trên OpenAlex
-            for issn in issns:
-                # Format ISSN để khớp định dạng (ví dụ: xxxx-xxxx)
-                formatted_issn = issn
-                if len(issn) == 8:
-                    formatted_issn = f"{issn[:4]}-{issn[4:]}"
-                    
-                url = f"https://api.openalex.org/sources?filter=issn:{formatted_issn}"
-                try:
-                    # Rate limit lịch sự
-                    time.sleep(0.2)
-                    
-                    response = safe_get(url, timeout=15)
-                    if response.status_code == 200:
-                        data = response.json()
-                        results = data.get("results", [])
-                        if results:
-                            source_data = results[0]
-                            openalex_id = source_data.get("id")
-                            homepage_url = source_data.get("homepage_url")
-                            works_count = source_data.get("works_count")
-                            cited_by_count = source_data.get("cited_by_count")
-                            
-                            # Đồng bộ Publisher nếu có thông tin từ OpenAlex
-                            publisher_name = source_data.get("publisher")
-                            publisher_uuid = None
-                            if publisher_name:
-                                with engine.begin() as conn:
-                                    pub_row = conn.execute(text("""
-                                        SELECT publisher_id FROM "Publisher" WHERE display_name = :name
-                                    """), {"name": publisher_name}).fetchone()
-                                    if pub_row:
-                                        publisher_uuid = pub_row[0]
-                                    else:
-                                        publisher_uuid = conn.execute(text("""
-                                            INSERT INTO "Publisher" (display_name)
-                                            VALUES (:name)
-                                            RETURNING publisher_id
-                                        """), {"name": publisher_name}).scalar()
-                            
-                            # Cập nhật thông tin vào DB
-                            with engine.begin() as conn:
-                                conn.execute(text("""
-                                    UPDATE "Journal"
-                                    SET openalex_id = :openalex_id,
-                                        homepage_url = :homepage_url,
-                                        works_count = :works_count,
-                                        cited_by_count = :cited_by_count,
-                                        publisher_id = COALESCE(:publisher_uuid, publisher_id),
-                                        openalex_synced_at = :synced_at
-                                    WHERE journal_id = :journal_id
-                                """), {
-                                    "openalex_id": openalex_id,
-                                    "homepage_url": homepage_url,
-                                    "works_count": works_count,
-                                    "cited_by_count": cited_by_count,
-                                    "publisher_uuid": publisher_uuid,
-                                    "synced_at": datetime.now(timezone.utc),
-                                    "journal_id": journal_id
-                                })
-                            
-                            print(f"  -> SUCCESS: OpenAlex ID={openalex_id}, Works={works_count}, Cites={cited_by_count}")
-                            success = True
-                            consecutive_429 = 0
-                            break # Đã tìm thấy qua ISSN này, chuyển sang tạp chí khác
-                    elif response.status_code == 429:
-                        print(f"  -> API Error for ISSN {formatted_issn}: HTTP 429")
-                        has_429 = True
-                    else:
-                        print(f"  -> API Error for ISSN {formatted_issn}: HTTP {response.status_code}")
-                except Exception as e:
-                    print(f"  -> Request Exception for ISSN {formatted_issn}: {e}")
-            
-            if success:
+                
+                print(f"  -> SUCCESS: '{display_name}' mapped to OpenAlex ID={openalex_id}")
+                synced_journal_ids.add(j_id)
+                chunk_synced_ids.add(j_id)
                 synced_count += 1
-            else:
-                if has_429:
-                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
-                    consecutive_429 += 1
-                    if consecutive_429 >= 3:
-                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
-                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
-                        sys.exit(1)
-                else:
-                    consecutive_429 = 0
-                    # Đánh dấu thời điểm sync thất bại thực sự để tránh bị quét lại liên tục
+                
+        # Với những journal thuộc chunk này nhưng KHÔNG tìm thấy trên OpenAlex
+        # Ta duyệt qua các journal có ISSN nằm trong chunk này mà chưa được đánh dấu sync
+        for issn in chunk:
+            for j_id in issn_to_journals[issn]:
+                if j_id not in synced_journal_ids and j_id not in chunk_synced_ids:
+                    # Đánh dấu đã quét (thất bại) để tránh lặp lần sau
+                    display_name = journal_info[j_id][0]
                     with engine.begin() as conn:
                         conn.execute(text("""
                             UPDATE "Journal"
@@ -278,13 +345,12 @@ def sync_journals(limit: int):
                             WHERE journal_id = :journal_id
                         """), {
                             "synced_at": datetime.now(timezone.utc),
-                            "journal_id": journal_id
+                            "journal_id": j_id
                         })
-                    print("  -> FAILED: Journal not found or API error on all ISSNs.")
+                    print(f"  -> NOT FOUND: '{display_name}' (ISSN {issn}) not found on OpenAlex.")
+                    synced_journal_ids.add(j_id)
                     failed_count += 1
-    finally:
-        pass
-        
+
     print(f"\n[sync] Finished! Synced: {synced_count}, Failed/Not found: {failed_count}")
 
 
@@ -883,51 +949,58 @@ def sync_works(limit: int):
                                     "year": pub_year
                                 }).scalar()
 
-                    # 2. Xử lý Sub_Category
-                    sub_categories = work.get("sub_categories", [])
-                    sub_category_uuid = None
-                    if sub_categories:
-                        sub_cat_name = sub_categories[0].get("display_name")
-                        if sub_cat_name:
+                    # 2. Xử lý primary_topic
+                    primary_topic = work.get("primary_topic")
+                    primary_topic_uuid = None
+                    if primary_topic:
+                        t_name = primary_topic.get("display_name")
+                        t_score = primary_topic.get("score")
+                        if t_score is not None:
+                            try:
+                                t_score = float(t_score)
+                            except ValueError:
+                                t_score = 0.0
+                        else:
+                            t_score = 0.0
+                        if t_name:
                             with engine.begin() as conn:
-                                sc_row = conn.execute(text("""
-                                    SELECT sub_category_id FROM "Sub_Category" WHERE display_name = :name
-                                """), {"name": sub_cat_name}).fetchone()
+                                t_row = conn.execute(text("""
+                                    SELECT topic_id FROM "Topic" WHERE display_name = :name
+                                """), {"name": t_name}).fetchone()
                                 
-                                if sc_row:
-                                    sub_category_uuid = sc_row[0]
+                                if t_row:
+                                    primary_topic_uuid = t_row[0]
                                 else:
-                                    sub_category_uuid = conn.execute(text("""
-                                        INSERT INTO "Sub_Category" (display_name)
-                                        VALUES (:name)
-                                        RETURNING sub_category_id
-                                    """), {"name": sub_cat_name}).scalar()
+                                    primary_topic_uuid = conn.execute(text("""
+                                        INSERT INTO "Topic" (display_name, score)
+                                        VALUES (:name, :score)
+                                        RETURNING topic_id
+                                    """), {"name": t_name, "score": t_score}).scalar()
                                     
                     # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
                     article_uuid = None
                     with engine.begin() as conn:
                         art_row = conn.execute(text("""
-                            SELECT article_id FROM "Article" WHERE title = :title AND journal_id = :journal_id
+                            SELECT article_id FROM "Article" WHERE title = :title AND issue_id = :issue_id
                         """), {
                             "title": work_title,
-                            "journal_id": journal_uuid
+                            "issue_id": issue_uuid
                         }).fetchone()
                         
                         if art_row:
                             article_uuid = art_row[0]
                         else:
                             article_uuid = conn.execute(text("""
-                                INSERT INTO "Article" (title, doi, abstract, journal_id, volume_id, issue_id, sub_category_id)
-                                VALUES (:title, :doi, :abstract, :journal_id, :volume, :issue, :sub_category_id)
+                                INSERT INTO "Article" (title, doi, abstract, issue_id, publication_year, primary_topic)
+                                VALUES (:title, :doi, :abstract, :issue_id, :pub_year, :primary_topic)
                                 RETURNING article_id
                             """), {
                                 "title": work_title,
                                 "doi": doi,
                                 "abstract": abstract,
-                                "journal_id": journal_uuid,
-                                "volume": volume_uuid,
-                                "issue": issue_uuid,
-                                "sub_category_id": sub_category_uuid
+                                "issue_id": issue_uuid,
+                                "pub_year": pub_year,
+                                "primary_topic": primary_topic_uuid
                             }).scalar()
                             
                     # 4. Xử lý Authorship (Tác giả và liên kết tác giả với bài viết)
@@ -940,7 +1013,6 @@ def sync_works(limit: int):
                         
                         if auth_name:
                             # Đảm bảo orcid/openalex_id hợp lệ trước khi so khớp
-                            # Thử tìm tác giả trong DB trước để tránh trùng lặp
                             author_uuid = None
                             with engine.begin() as conn:
                                 # Ưu tiên tìm theo OpenAlex ID
@@ -980,15 +1052,17 @@ def sync_works(limit: int):
                                         "openalex_id": auth_openalex_id
                                     }).scalar()
                                     
-                                # Liên kết Author và Article
-                                conn.execute(text("""
-                                    INSERT INTO "Author_Article" (author_id, article_id)
-                                    VALUES (:author_id, :article_id)
-                                    ON CONFLICT DO NOTHING
-                                """), {
-                                    "author_id": author_uuid,
-                                    "article_id": article_uuid
-                                })
+                            # Liên kết Author và Article (luôn chạy, không để thụt lề bên trong if not author_uuid)
+                            if author_uuid and article_uuid:
+                                with engine.begin() as conn:
+                                    conn.execute(text("""
+                                        INSERT INTO "Author_Article" (author_id, article_id)
+                                        VALUES (:author_id, :article_id)
+                                        ON CONFLICT DO NOTHING
+                                    """), {
+                                        "author_id": author_uuid,
+                                        "article_id": article_uuid
+                                    })
                                 
                         # 5. Xử lý Keywords
                         keywords = work.get("keywords", [])

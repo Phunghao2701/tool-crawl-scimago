@@ -361,17 +361,19 @@ def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
     # Upsert Journal_Ranking và lấy id
     row = conn.execute(text("""
         INSERT INTO "Journal_Ranking"
-            (journal_id, source, metric_id, year, value_txt, value_int, value_float)
+            (journal_id, subject_category_id, source, metric_id, year, value_txt, value_int, value_float)
         VALUES
-            (:jid, :src, :mid, :yr, :vtxt, :vint, :vfloat)
+            (:jid, :cid, :src, :mid, :yr, :vtxt, :vint, :vfloat)
         ON CONFLICT (journal_id, source, metric_id, year, 
                      (coalesce(value_txt, '')), 
                      (coalesce(value_int, 0)), 
                      (coalesce(value_float, 0)))
-        DO UPDATE SET created_at = EXCLUDED.created_at
+        DO UPDATE SET 
+            subject_category_id = EXCLUDED.subject_category_id,
+            created_at = EXCLUDED.created_at
         RETURNING journal_ranking_id
     """), {
-        "jid": journal_id, "src": source.upper(), "mid": metric_id, "yr": year,
+        "jid": journal_id, "cid": category_id, "src": source.upper(), "mid": metric_id, "yr": year,
         "vtxt": value_txt, "vint": value_int, "vfloat": v_float
     }).fetchone()
     
