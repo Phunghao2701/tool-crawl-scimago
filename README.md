@@ -69,11 +69,22 @@ Bạn không cần tạo file Excel báo cáo mà có thể truy cập thẳng v
     *   **Mật khẩu (Password)**: `1234`
     *   **Cơ sở dữ liệu (Database)**: `scientific_journal_db`
 
-### 3. (Tùy chọn) Chạy thủ công các lệnh ETL trong Docker
-Nếu sau này bạn muốn import file dữ liệu mới hoặc đồng bộ thêm tạp chí:
-*   **Import file Scimago mới**: `docker compose exec app python tools/scimago_etl.py import --file data/ten_file_moi.csv --year 2026`
-*   **Đồng bộ thêm OpenAlex**: `docker compose exec app python tools/openalex_sync.py sync --limit 100`
-*   **Xem thống kê số lượng dữ liệu**: `docker compose exec app python tools/scimago_etl.py stats`
+### 3. (Tùy chọn) Import dữ liệu năm khác (Ví dụ: Năm 2024)
+Nếu bạn muốn nạp dữ liệu của năm khác (ví dụ: 2024):
+1.  Copy file dữ liệu đó vào thư mục `data/` (ví dụ: đặt tên là `scimagojr 2024.csv`).
+2.  Chạy lệnh chỉ định đường dẫn file và năm tương ứng:
+    ```bash
+    docker compose exec app python tools/scimago_etl.py import --file "data/scimagojr 2024.csv" --year 2024
+    ```
+3.  (Tùy chọn) Đồng bộ hóa với OpenAlex cho các tạp chí mới nạp:
+    ```bash
+    docker compose exec app python tools/openalex_sync.py sync --limit 100
+    ```
+
+*   **Xem thống kê số lượng dữ liệu hiện có trong DB**:
+    ```bash
+    docker compose exec app python tools/scimago_etl.py stats
+    ```
 
 ---
 
