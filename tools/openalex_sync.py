@@ -218,6 +218,12 @@ def sync_journals(limit: int):
         
     print(f"[sync] Prepared {len(all_issns)} unique ISSNs to query in chunks of 50...")
     
+    # Lấy tất cả openalex_id đã tồn tại trong DB để tránh UniqueViolation
+    with engine.connect() as conn:
+        existing_rows = conn.execute(text('SELECT openalex_id FROM "Journal" WHERE openalex_id IS NOT NULL')).fetchall()
+    existing_openalex_ids = {row[0] for row in existing_rows}
+    synced_openalex_ids_this_run = set()
+    
     synced_journal_ids = set()
     synced_count = 0
     failed_count = 0
@@ -289,6 +295,23 @@ def sync_journals(limit: int):
                     
                 display_name = journal_info[j_id][0]
                 
+                # Tránh UniqueViolation nếu openalex_id đã được gán cho journal khác
+                if openalex_id in existing_openalex_ids or openalex_id in synced_openalex_ids_this_run:
+                    print(f"  -> WARNING: OpenAlex ID {openalex_id} already mapped in DB. Marking '{display_name}' as synced without setting openalex_id to prevent UniqueViolation.")
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            UPDATE "Journal"
+                            SET openalex_synced_at = :synced_at
+                            WHERE journal_id = :journal_id
+                        """), {
+                            "synced_at": datetime.now(timezone.utc),
+                            "journal_id": j_id
+                        })
+                    synced_journal_ids.add(j_id)
+                    chunk_synced_ids.add(j_id)
+                    synced_count += 1
+                    continue
+
                 # Đồng bộ Publisher
                 publisher_uuid = None
                 if publisher_name:
@@ -329,6 +352,7 @@ def sync_journals(limit: int):
                 print(f"  -> SUCCESS: '{display_name}' mapped to OpenAlex ID={openalex_id}")
                 synced_journal_ids.add(j_id)
                 chunk_synced_ids.add(j_id)
+                synced_openalex_ids_this_run.add(openalex_id)
                 synced_count += 1
                 
         # Với những journal thuộc chunk này nhưng KHÔNG tìm thấy trên OpenAlex
