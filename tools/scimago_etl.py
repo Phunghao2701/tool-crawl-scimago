@@ -198,15 +198,111 @@ def best_quartile(quartiles):
 # DB helpers
 # ---------------------------------------------------------------
 
+_name_map = None
+_region_map = {
+    "Western Europe": ("WE", "WEU"),
+    "Latin America": ("LA", "LAC"),
+    "Northern America": ("NA", "NAM"),
+    "Africa": ("AF", "AFR"),
+    "Asiatic Region": ("AS", "ASN"),
+    "Eastern Europe": ("EE", "EES"),
+    "Middle East": ("ME", "MEA"),
+    "Pacific Region": ("PA", "PAC"),
+}
+
+
+def load_countries_map():
+    global _name_map
+    if _name_map is not None:
+        return
+    _name_map = {}
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    json_path = os.path.join(base_dir, "data", "countries.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for c in data:
+                    cca2 = c.get("cca2")
+                    cca3 = c.get("cca3")
+                    common_name = c.get("name", {}).get("common", "")
+                    if common_name:
+                        _name_map[common_name.lower()] = (cca2, cca3)
+                    official_name = c.get("name", {}).get("official", "")
+                    if official_name:
+                        _name_map[official_name.lower()] = (cca2, cca3)
+        except Exception as e:
+            print(f"[warning] Failed to load countries.json: {e}")
+
+
+def get_zone_codes(name: str, zone_type: str):
+    load_countries_map()
+    name_clean = name.strip()
+    name_lower = name_clean.lower()
+    
+    if zone_type.upper() == "REGION":
+        if name_clean in _region_map:
+            return _region_map[name_clean]
+        words = name_clean.split()
+        if len(words) >= 2:
+            code = "".join([w[0].upper() for w in words[:2]])
+            iso_code = "".join([w[0].upper() for w in words[:3]]) + "R"
+            if len(iso_code) > 3:
+                iso_code = iso_code[:3]
+        else:
+            code = name_clean[:2].upper()
+            iso_code = name_clean[:3].upper()
+        return code, iso_code
+        
+    if name_lower in _name_map:
+        return _name_map[name_lower]
+        
+    special_mappings = {
+        "united kingdom": ("GB", "GBR"),
+        "united states": ("US", "USA"),
+        "south korea": ("KR", "KOR"),
+        "vietnam": ("VN", "VNM"),
+        "viet nam": ("VN", "VNM"),
+        "russia": ("RU", "RUS"),
+        "russian federation": ("RU", "RUS"),
+        "iran": ("IR", "IRN"),
+        "iran, islamic republic of": ("IR", "IRN"),
+        "syria": ("SY", "SYR"),
+        "syrian arab republic": ("SY", "SYR"),
+        "laos": ("LA", "LAO"),
+        "macao": ("MO", "MAC"),
+        "macau": ("MO", "MAC"),
+        "taiwan": ("TW", "TWN"),
+        "taiwan, province of china": ("TW", "TWN"),
+    }
+    if name_lower in special_mappings:
+        return special_mappings[name_lower]
+        
+    code = name_clean[:2].upper()
+    iso_code = name_clean[:3].upper()
+    return code, iso_code
+
+
 def upsert_zone(conn, name: str, zone_type: str):
     if not name or not name.strip():
         return None
+    
+    code, iso_code = get_zone_codes(name, zone_type)
+    
     row = conn.execute(text("""
-        INSERT INTO "Zone" (name, type, source)
-        VALUES (:name, :type, :source)
-        ON CONFLICT (name, type) DO UPDATE SET name = EXCLUDED.name
+        INSERT INTO "Zone" (name, type, code, iso_code, source)
+        VALUES (:name, :type, :code, :iso_code, :source)
+        ON CONFLICT (name, type) DO UPDATE SET 
+            code = EXCLUDED.code,
+            iso_code = EXCLUDED.iso_code
         RETURNING zone_id
-    """), {"name": name.strip(), "type": zone_type.upper(), "source": "SCIMAGO"}).fetchone()
+    """), {
+        "name": name.strip(), 
+        "type": zone_type.upper(), 
+        "code": code, 
+        "iso_code": iso_code, 
+        "source": "SCIMAGO"
+    }).fetchone()
     return row[0]
 
 
@@ -258,21 +354,38 @@ def upsert_subject_category(conn, area_id, name: str):
 def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
                    value_txt=None, value_int=None, value_float=None):
     if value_txt is None and value_int is None and value_float is None:
-        return
-    conn.execute(text("""
+        return None
+    
+    v_float = float(value_float) if value_float is not None else None
+    
+    # Upsert Journal_Ranking và lấy id
+    row = conn.execute(text("""
         INSERT INTO "Journal_Ranking"
-            (journal_id, subject_category_id, source, metric_id, year,
-             value_txt, value_int, value_float)
+            (journal_id, source, metric_id, year, value_txt, value_int, value_float)
         VALUES
-            (:jid, :catid, :src, :mid, :yr,
-             :vtxt, :vint, :vfloat)
-        ON CONFLICT DO NOTHING
+            (:jid, :src, :mid, :yr, :vtxt, :vint, :vfloat)
+        ON CONFLICT (journal_id, source, metric_id, year, 
+                     (coalesce(value_txt, '')), 
+                     (coalesce(value_int, 0)), 
+                     (coalesce(value_float, 0)))
+        DO UPDATE SET created_at = EXCLUDED.created_at
+        RETURNING journal_ranking_id
     """), {
-        "jid": journal_id, "catid": category_id,
-        "src": source.upper(), "mid": metric_id, "yr": year,
-        "vtxt": value_txt, "vint": value_int,
-        "vfloat": float(value_float) if value_float is not None else None,
-    })
+        "jid": journal_id, "src": source.upper(), "mid": metric_id, "yr": year,
+        "vtxt": value_txt, "vint": value_int, "vfloat": v_float
+    }).fetchone()
+    
+    ranking_id = row[0]
+    
+    # Chèn liên kết sang Subject Category nếu có chuyên ngành cụ thể
+    if category_id:
+        conn.execute(text("""
+            INSERT INTO "Journal_Ranking_Subject_Category" (journal_ranking_id, subject_category_id)
+            VALUES (:rid, :cid)
+            ON CONFLICT DO NOTHING
+        """), {"rid": ranking_id, "cid": category_id})
+    
+    return ranking_id
 
 
 # ---------------------------------------------------------------

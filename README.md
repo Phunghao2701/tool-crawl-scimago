@@ -16,7 +16,8 @@ Hệ thống ETL (Extract, Transform, Load) nội bộ được viết bằng Py
 [Bảng cơ sở dữ liệu chuẩn hóa] (Publisher, Journal với cột ISSN trực tiếp, Subject Category...)
         │
         ▼ (OpenAlex Sync bằng ISSN qua Polite Pool)
-[Làm giàu dữ liệu Tạp chí] (Tổng số bài báo, Lượt trích dẫn, Link OpenAlex, Homepage URL)
+[Làm giàu dữ liệu Tạp chí & Công trình khoa học] 
+ (Tạp chí, Tác giả thực tế, Bài báo, Tập Volume, Số Issue, Chủ đề Topic/Sub_Topic, Từ khóa Keyword)
 ```
 
 ---
@@ -37,10 +38,10 @@ Hệ thống ETL (Extract, Transform, Load) nội bộ được viết bằng Py
 2.  Bảng điều khiển tương tác sẽ xuất hiện cho phép bạn bấm số chọn chức năng:
     *   **Phím 1:** Tự động cài đặt thư viện Python, bật Docker Postgres và khởi tạo bảng.
     *   **Phím 2:** Nhập đường dẫn file Scimago thô để import.
-    *   **Phím 3:** Đồng bộ dữ liệu với OpenAlex API.
-    *   **Phím 4:** Xuất báo cáo (Excel & CSV) ra thư mục `data/`.
-    *   **Phím 5:** Xem thống kê các bảng dữ liệu hiện tại.
-    *   **Phím 6 (FULL Pipeline):** Tự động chạy tuần tự cả 3 bước: Import -> Sync -> Export.
+    *   **Phím 3:** Đồng bộ dữ liệu (Tạp chí, Tác giả hoặc Bài báo) với OpenAlex API.
+    *   **Phím 4:** Xuất báo cáo (Excel & CSV) cho Tạp chí, Tác giả hoặc Bài báo ra thư mục `data/`.
+    *   **Phím 5:** Xem thống kê các bảng dữ liệu hiện tại (gồm Tạp chí, Tác giả, Bài báo, Topic, Từ khóa).
+    *   **Phím 6 (FULL Pipeline):** Tự động chạy tuần tự các bước: Import -> Sync (tất cả) -> Export (tất cả).
 
 ---
 
@@ -167,6 +168,42 @@ Bổ sung các trường thông tin: website tạp chí, tổng số bài báo c
 
 ---
 
+### Bước 2.2: Đồng bộ hóa Bài báo (Works), Volume, Issue, Topic, Sub_Topic & Từ khóa (Keywords)
+Lấy thông tin các bài báo nghiên cứu khoa học theo **Tạp chí (Journals)** đã có OpenAlex ID trong DB. Hệ thống sẽ tự động đồng bộ bài báo, sinh ra danh sách tác giả thực tế (không dùng mẫu giả lập), phân tích cấu trúc tập phát hành (**Volume**), số phát hành (**Issue**), các chủ đề chính và phụ (**Topic & Sub_Topic**) và từ khóa (**Keywords**) để lưu trữ chuẩn hóa trong DB.
+
+*   **Đồng bộ thử nghiệm tối đa 2 bài viết mỗi tạp chí:**
+    ```bash
+    python tools/openalex_sync.py sync-works --limit 2
+    ```
+*   **Đồng bộ toàn bộ bài báo nghiên cứu:**
+    ```bash
+    python tools/openalex_sync.py sync-works
+    ```
+*   **Xem thống kê đồng bộ các thực thể học thuật (Articles, Volumes, Issues, Topics, Sub_Topics, Keywords, Publishers):**
+    ```bash
+    python tools/openalex_sync.py stats-works
+    ```
+
+---
+
+### Bước 2.3: Đồng bộ hóa thông tin chi tiết cho Tác giả (Author) thực tế
+Đồng bộ hóa dữ liệu nhà nghiên cứu thực tế được trích xuất tự động từ danh sách bài viết (Tên hiển thị chuẩn xác, đơn vị công tác gần nhất `last_known_institution`, tổng số bài báo `works_count`, số lượt trích dẫn `cited_by_count`, chỉ số cá nhân `h_index`, `i10_index`, trang chủ cá nhân) bằng API của OpenAlex dựa trên OpenAlex ID.
+
+*   **Đồng bộ thử nghiệm 50 tác giả:**
+    ```bash
+    python tools/openalex_sync.py sync-authors --limit 50
+    ```
+*   **Đồng bộ toàn bộ tác giả thực tế có sẵn trong DB:**
+    ```bash
+    python tools/openalex_sync.py sync-authors
+    ```
+*   **Xem thống kê đồng bộ tác giả:**
+    ```bash
+    python tools/openalex_sync.py stats-authors
+    ```
+
+---
+
 ### Bước 3: Xuất dữ liệu báo cáo chi tiết (Enriched Data)
 Xuất bảng kết hợp đầy đủ thông tin từ Scimago (Rank, SJR Score, Quartile) và OpenAlex (Works, Citations, Homepage URL, OpenAlex ID, ISSN) ra file báo cáo:
 
@@ -174,13 +211,29 @@ Xuất bảng kết hợp đầy đủ thông tin từ Scimago (Rank, SJR Score,
     ```bash
     python tools/openalex_sync.py export --limit 20
     ```
-*   **Xuất toàn bộ dữ liệu ra file báo cáo:**
+*   **Xuất toàn bộ dữ liệu ra file báo cáo Tạp chí:**
     ```bash
     python tools/openalex_sync.py export
     ```
     *   Lệnh này sẽ tự động xuất đồng thời **2 định dạng file báo cáo** cùng chứa cột **`issn`**:
         1.  **Excel:** `data/enriched_journals.xlsx` (Tiện lợi để xem và làm báo cáo)
         2.  **CSV:** `data/enriched_journals.csv` (Định dạng UTF-8-BOM tương thích tốt với Excel Việt hóa)
+
+*   **Xuất toàn bộ dữ liệu ra file báo cáo Tác giả:**
+    ```bash
+    python tools/openalex_sync.py export-authors
+    ```
+    *   Lệnh này sẽ tự động xuất đồng thời **2 định dạng file báo cáo** cho Tác giả:
+        1.  **Excel:** `data/enriched_authors.xlsx`
+        2.  **CSV:** `data/enriched_authors.csv`
+
+*   **Xuất toàn bộ dữ liệu ra file báo cáo Bài báo & Công trình nghiên cứu (bao gồm Topic & Keywords):**
+    ```bash
+    python tools/openalex_sync.py export-works
+    ```
+    *   Lệnh này sẽ tự động xuất đồng thời **2 định dạng file báo cáo** cho Bài báo:
+        1.  **Excel:** `data/enriched_articles.xlsx`
+        2.  **CSV:** `data/enriched_articles.csv`
 
 > 🔬 **Bố cục cột khoa học (Columns Layout):**
 > Thứ tự các cột trong file xuất ra được tự động sắp xếp theo nhóm logic từ trái sang phải để tối ưu hóa trải nghiệm đọc:
@@ -195,7 +248,8 @@ Xuất bảng kết hợp đầy đủ thông tin từ Scimago (Rank, SJR Score,
 ## 🗄️ Cấu trúc cơ sở dữ liệu mới (Database Schema)
 
 Cơ sở dữ liệu được thiết kế tối ưu bằng PostgreSQL chạy trên Docker:
-*   **Khóa chính UUID**: Toàn bộ các bảng chính sử dụng khóa định danh UUID tự sinh (`gen_random_uuid()`) để tăng tính toàn vẹn dữ liệu.
+*   **Khóa chính BIGINT Identity**: Các bảng dữ liệu (ngoại trừ bảng `user` sử dụng `UUID`) chuyển sang khóa tự tăng số nguyên kiểu `BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY` giúp tối ưu hiệu năng truy vấn, tạo liên kết khóa ngoại dễ dàng và đồng bộ mượt mà với ORM.
+*   **Tự động cập nhật vùng miền (Zone)**: Hỗ trợ nạp đầy đủ mã vùng quốc gia `code` (ISO Alpha-2) và `iso_code` (ISO Alpha-3) hoàn toàn cục bộ (offline) bằng cách sử dụng dữ liệu tham chiếu từ file [countries.json](file:///e:/tool-crawl-scimago/data/countries.json).
 *   **Kiểu dữ liệu ENUM**: Quản lý chuẩn hóa các kiểu phân loại thông qua 7 kiểu dữ liệu enum của Postgres (`role_account`, `status_account`, `auth_provider`, `type_zone`, `source_zone`, `ranking_source`, `ranking_metric_type`).
 *   **Chống trùng lặp dữ liệu**: Sử dụng các index duy nhất bán phần (partial indexes) trên bảng xếp hạng `"Journal_Ranking"` giúp hệ thống có thể import đè dữ liệu nhiều lần mà không bao giờ bị trùng lặp bản ghi.
 

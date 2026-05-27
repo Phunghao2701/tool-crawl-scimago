@@ -71,7 +71,27 @@ def main():
                     "--limit", "50"
                 ], check=True)
                 
-                print("[auto-init] Automatic ETL setup completed successfully!")
+                print("[auto-init] Syncing works (Articles, Topics, Keywords) with OpenAlex...")
+                subprocess.run([
+                    sys.executable, 
+                    "tools/openalex_sync.py", 
+                    "sync-works",
+                    "--limit", "20"
+                ], check=True)
+                
+                print("[auto-init] Syncing authors with OpenAlex...")
+                subprocess.run([
+                    sys.executable, 
+                    "tools/openalex_sync.py", 
+                    "sync-authors"
+                ], check=True)
+                
+                print("[auto-init] Exporting all enriched reports (Journals, Authors, Articles)...")
+                subprocess.run([sys.executable, "tools/openalex_sync.py", "export"], check=True)
+                subprocess.run([sys.executable, "tools/openalex_sync.py", "export-authors"], check=True)
+                subprocess.run([sys.executable, "tools/openalex_sync.py", "export-works"], check=True)
+                
+                print("[auto-init] Automatic ETL setup and report generation completed successfully!")
             else:
                 print(f"[auto-init] Warning: File {filepath} not found. Cannot auto-import.")
     except Exception as e:
