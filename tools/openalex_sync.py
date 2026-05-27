@@ -4,7 +4,7 @@ Usage:
   python tools/openalex_sync.py sync --limit 10
   python tools/openalex_sync.py stats
 """
-
+import urllib3
 import argparse
 import os
 import sys
@@ -17,7 +17,6 @@ import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-
 # Lấy đường dẫn tuyệt đối tới file .env nằm ở thư mục gốc của project
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv_path = os.path.join(BASE_DIR, ".env")
@@ -28,6 +27,14 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
 )
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "academic-etl@example.com")
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
+print("[INFO] Email OpenAlex dang su dung:", OPENALEX_EMAIL)
+if OPENALEX_API_KEY:
+    print("[INFO] Da tim thay OPENALEX_API_KEY trong file .env.")
+else:
+    print("[WARNING] KHONG tim thay OPENALEX_API_KEY trong file .env!")
+    print("  -> Vui long dang ky tai khoan mien phi tai https://openalex.org/settings/api")
+    print("  -> Lay API Key mien phi va them vao file .env de tranh loi HTTP 429.")
 
 
 def get_headers():
@@ -35,6 +42,69 @@ def get_headers():
     return {
         "User-Agent": f"ScientificJournalETL/1.0 (mailto:{OPENALEX_EMAIL})"
     }
+
+
+def safe_get(url, headers=None, timeout=15):
+    import urllib3
+    import urllib.parse as urllib_parse
+    # Tắt các cảnh báo không an toàn khi dùng verify=False
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    # Tự động gắn mailto và api_key vào query parameters để bảo đảm vào Polite Pool và xác thực tài khoản
+    parsed_url = urllib_parse.urlparse(url)
+    query_params = urllib_parse.parse_qs(parsed_url.query)
+    
+    modified = False
+    if OPENALEX_EMAIL and 'mailto' not in query_params:
+        query_params['mailto'] = [OPENALEX_EMAIL]
+        modified = True
+    if OPENALEX_API_KEY and 'api_key' not in query_params:
+        query_params['api_key'] = [OPENALEX_API_KEY]
+        modified = True
+        
+    if modified:
+        new_query = urllib_parse.urlencode(query_params, doseq=True)
+        url = parsed_url._replace(query=new_query).geturl()
+            
+    if headers is None:
+        headers = get_headers()
+        
+    retries = 3
+    for attempt in range(retries):
+        try:
+            # Thử gọi kiểm tra SSL thông thường trước
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 429:
+                print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s before retry {attempt+1}/{retries}...")
+                time.sleep(10)
+                continue
+            return resp
+        except BaseException as e:
+            # Bắt tất cả lỗi (kể cả lỗi SSL context của python 3.14 pre-release)
+            print(f"  [SSL/Connection Warning] Attempt {attempt+1}/{retries} failed: {e}. Retrying with verify=False...")
+            try:
+                resp = requests.get(url, headers=headers, timeout=timeout, verify=False)
+                if resp.status_code == 429:
+                    print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s...")
+                    time.sleep(10)
+                    continue
+                return resp
+            except BaseException as e_inner:
+                print(f"  [Error] Fallback verify=False failed: {e_inner}")
+                if attempt < retries - 1:
+                    time.sleep(3)
+                else:
+                    # Trả về một đối tượng giả lập để tránh làm sập chương trình
+                    class FakeResponse:
+                        status_code = 500
+                        def json(self): return {}
+                    return FakeResponse()
+                    
+    # Hết lượt retry và vẫn bị 429
+    class FakeResponse429:
+        status_code = 429
+        def json(self): return {}
+    return FakeResponse429()
 
 
 def split_issns(v: str):
@@ -88,6 +158,7 @@ def sync_journals(limit: int):
         
         synced_count = 0
         failed_count = 0
+        consecutive_429 = 0
         
         for idx, journal in enumerate(journals, 1):
             journal_id = journal[0]
@@ -113,6 +184,7 @@ def sync_journals(limit: int):
                 continue
 
             success = False
+            has_429 = False
             # Gọi thử từng ISSN cho tới khi tìm thấy tạp chí trên OpenAlex
             for issn in issns:
                 # Format ISSN để khớp định dạng (ví dụ: xxxx-xxxx)
@@ -125,7 +197,7 @@ def sync_journals(limit: int):
                     # Rate limit lịch sự
                     time.sleep(0.2)
                     
-                    response = requests.get(url, headers=get_headers(), timeout=15)
+                    response = safe_get(url, timeout=15)
                     if response.status_code == 200:
                         data = response.json()
                         results = data.get("results", [])
@@ -176,7 +248,11 @@ def sync_journals(limit: int):
                             
                             print(f"  -> SUCCESS: OpenAlex ID={openalex_id}, Works={works_count}, Cites={cited_by_count}")
                             success = True
+                            consecutive_429 = 0
                             break # Đã tìm thấy qua ISSN này, chuyển sang tạp chí khác
+                    elif response.status_code == 429:
+                        print(f"  -> API Error for ISSN {formatted_issn}: HTTP 429")
+                        has_429 = True
                     else:
                         print(f"  -> API Error for ISSN {formatted_issn}: HTTP {response.status_code}")
                 except Exception as e:
@@ -185,18 +261,27 @@ def sync_journals(limit: int):
             if success:
                 synced_count += 1
             else:
-                # Đánh dấu thời điểm sync thất bại / không thấy để tránh bị quét lại liên tục
-                with engine.begin() as conn:
-                    conn.execute(text("""
-                        UPDATE "Journal"
-                        SET openalex_synced_at = :synced_at
-                        WHERE journal_id = :journal_id
-                    """), {
-                        "synced_at": datetime.now(timezone.utc),
-                        "journal_id": journal_id
-                    })
-                print("  -> FAILED: Journal not found or API error on all ISSNs.")
-                failed_count += 1
+                if has_429:
+                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
+                    consecutive_429 += 1
+                    if consecutive_429 >= 3:
+                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
+                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
+                        sys.exit(1)
+                else:
+                    consecutive_429 = 0
+                    # Đánh dấu thời điểm sync thất bại thực sự để tránh bị quét lại liên tục
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            UPDATE "Journal"
+                            SET openalex_synced_at = :synced_at
+                            WHERE journal_id = :journal_id
+                        """), {
+                            "synced_at": datetime.now(timezone.utc),
+                            "journal_id": journal_id
+                        })
+                    print("  -> FAILED: Journal not found or API error on all ISSNs.")
+                    failed_count += 1
     finally:
         pass
         
@@ -431,6 +516,7 @@ def sync_authors(limit: int):
         
         synced_count = 0
         failed_count = 0
+        consecutive_429 = 0
         
         for idx, author in enumerate(authors, 1):
             author_id = author[0]
@@ -456,7 +542,7 @@ def sync_authors(limit: int):
                 
             try:
                 time.sleep(0.2) # Polite pool rate limit
-                response = requests.get(url, headers=get_headers(), timeout=15)
+                response = safe_get(url, timeout=15)
                 if response.status_code == 200:
                     data = response.json()
                     
@@ -511,8 +597,17 @@ def sync_authors(limit: int):
                     
                     print(f"  -> SUCCESS: Name={disp_name}, Works={works_count}, Cites={cited_by_count}, H-index={h_index}")
                     synced_count += 1
+                    consecutive_429 = 0
+                elif response.status_code == 429:
+                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
+                    consecutive_429 += 1
+                    if consecutive_429 >= 3:
+                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
+                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
+                        sys.exit(1)
                 else:
-                    # Đánh dấu thời điểm quét thất bại để tránh lặp vô hạn
+                    consecutive_429 = 0
+                    # Đánh dấu thời điểm quét thất bại thực sự để tránh lặp vô hạn
                     with engine.begin() as conn:
                         conn.execute(text("""
                             UPDATE "Author"
@@ -641,6 +736,7 @@ def sync_works(limit: int):
     print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
     
     synced_works_count = 0
+    consecutive_429 = 0
     
     for idx, journal in enumerate(journals, 1):
         journal_uuid = journal[0]
@@ -663,6 +759,9 @@ def sync_works(limit: int):
         try:
             current_url = url
             page_idx = 1
+            sync_success = True
+            has_429 = False
+            
             while True:
                 import urllib.parse as urllib_parse
                 # Lịch sự tránh spam API
@@ -672,9 +771,12 @@ def sync_works(limit: int):
                 else:
                     print(f"  -> Fetching works page...")
                     
-                response = requests.get(current_url, headers=get_headers(), timeout=15)
+                response = safe_get(current_url, timeout=15)
                 if response.status_code != 200:
                     print(f"  -> FAILED to fetch works: HTTP {response.status_code}")
+                    sync_success = False
+                    if response.status_code == 429:
+                        has_429 = True
                     break
                     
                 data = response.json()
@@ -781,168 +883,173 @@ def sync_works(limit: int):
                                     "year": pub_year
                                 }).scalar()
 
-                    # 2. Xử lý Topic (primary_topic)
-                    topic_uuid = None
-                    primary_topic = work.get("primary_topic")
-                    if primary_topic:
-                        topic_name = primary_topic.get("display_name")
-                        topic_score = primary_topic.get("score", 0.0)
-                        
-                        if topic_name:
+                    # 2. Xử lý Sub_Category
+                    sub_categories = work.get("sub_categories", [])
+                    sub_category_uuid = None
+                    if sub_categories:
+                        sub_cat_name = sub_categories[0].get("display_name")
+                        if sub_cat_name:
                             with engine.begin() as conn:
-                                t_row = conn.execute(text("""
-                                    SELECT topic_id FROM "Topic" WHERE display_name = :name
-                                """), {"name": topic_name}).fetchone()
+                                sc_row = conn.execute(text("""
+                                    SELECT sub_category_id FROM "Sub_Category" WHERE display_name = :name
+                                """), {"name": sub_cat_name}).fetchone()
                                 
-                                if t_row:
-                                    topic_uuid = t_row[0]
+                                if sc_row:
+                                    sub_category_uuid = sc_row[0]
                                 else:
-                                    topic_uuid = conn.execute(text("""
-                                        INSERT INTO "Topic" (display_name, score)
-                                        VALUES (:name, :score)
-                                        RETURNING topic_id
-                                    """), {"name": topic_name, "score": topic_score}).scalar()
+                                    sub_category_uuid = conn.execute(text("""
+                                        INSERT INTO "Sub_Category" (display_name)
+                                        VALUES (:name)
+                                        RETURNING sub_category_id
+                                    """), {"name": sub_cat_name}).scalar()
                                     
-                    # 3. Tạo hoặc lấy Article
+                    # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
                     article_uuid = None
                     with engine.begin() as conn:
-                        a_row = None
-                        if doi:
-                            a_row = conn.execute(text("""
-                                SELECT article_id FROM "Article" WHERE doi = :doi
-                            """), {"doi": doi}).fetchone()
-                        if not a_row:
-                            a_row = conn.execute(text("""
-                                SELECT article_id FROM "Article" WHERE title = :title
-                            """), {"title": work_title}).fetchone()
-                            
-                        if a_row:
-                            article_uuid = a_row[0]
-                            # Cập nhật issue_id nếu trước đó chưa có
-                            conn.execute(text("""
-                                UPDATE "Article"
-                                SET issue_id = COALESCE(issue_id, :issue_id)
-                                WHERE article_id = :article_id
-                            """), {"issue_id": issue_uuid, "article_id": article_uuid})
+                        art_row = conn.execute(text("""
+                            SELECT article_id FROM "Article" WHERE title = :title AND journal_id = :journal_id
+                        """), {
+                            "title": work_title,
+                            "journal_id": journal_uuid
+                        }).fetchone()
+                        
+                        if art_row:
+                            article_uuid = art_row[0]
                         else:
                             article_uuid = conn.execute(text("""
-                                INSERT INTO "Article" (title, abstract, publication_year, doi, primary_topic, issue_id)
-                                VALUES (:title, :abstract, :year, :doi, :topic_id, :issue_id)
+                                INSERT INTO "Article" (title, doi, abstract, journal_id, volume_id, issue_id, sub_category_id)
+                                VALUES (:title, :doi, :abstract, :journal_id, :volume, :issue, :sub_category_id)
                                 RETURNING article_id
                             """), {
                                 "title": work_title,
-                                "abstract": abstract,
-                                "year": pub_year,
                                 "doi": doi,
-                                "topic_id": topic_uuid,
-                                "issue_id": issue_uuid
+                                "abstract": abstract,
+                                "journal_id": journal_uuid,
+                                "volume": volume_uuid,
+                                "issue": issue_uuid,
+                                "sub_category_id": sub_category_uuid
                             }).scalar()
                             
-                    # 4. Trích xuất tác giả thực tế từ authorships và liên kết với Article
+                    # 4. Xử lý Authorship (Tác giả và liên kết tác giả với bài viết)
                     authorships = work.get("authorships", [])
                     for auth_item in authorships:
-                        author_data = auth_item.get("author") or {}
-                        auth_openalex_id = author_data.get("id")
+                        author_data = auth_item.get("author", {})
                         auth_name = author_data.get("display_name")
                         auth_orcid = author_data.get("orcid")
+                        auth_openalex_id = author_data.get("id")
                         
-                        if not auth_openalex_id or not auth_name:
-                            continue
-                            
-                        with engine.begin() as conn:
-                            author_row = conn.execute(text("""
-                                SELECT author_id FROM "Author" WHERE openalex_id = :openalex_id
-                            """), {"openalex_id": auth_openalex_id}).fetchone()
-                            
-                            if author_row:
-                                author_uuid = author_row[0]
-                                if auth_orcid:
-                                    conn.execute(text("""
-                                        UPDATE "Author"
-                                        SET orcid = COALESCE(orcid, :orcid)
-                                        WHERE author_id = :author_id
-                                    """), {"orcid": auth_orcid, "author_id": author_uuid})
-                            else:
-                                author_uuid = conn.execute(text("""
-                                    INSERT INTO "Author" (display_name, orcid, openalex_id)
-                                    VALUES (:name, :orcid, :openalex_id)
-                                    RETURNING author_id
-                                """), {
-                                    "name": auth_name,
-                                    "orcid": auth_orcid,
-                                    "openalex_id": auth_openalex_id
-                                }).scalar()
-                                
-                            # Liên kết Author và Article
-                            conn.execute(text("""
-                                INSERT INTO "Author_Article" (author_id, article_id)
-                                VALUES (:author_id, :article_id)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "author_id": author_uuid,
-                                "article_id": article_uuid
-                            })
-                            
-                    # 5. Xử lý Keywords
-                    keywords = work.get("keywords", [])
-                    for kw in keywords:
-                        kw_name = kw.get("display_name")
-                        kw_score = kw.get("score", 0.0)
-                        if kw_name:
+                        if auth_name:
+                            # Đảm bảo orcid/openalex_id hợp lệ trước khi so khớp
+                            # Thử tìm tác giả trong DB trước để tránh trùng lặp
+                            author_uuid = None
                             with engine.begin() as conn:
-                                kw_row = conn.execute(text("""
-                                    SELECT keyword_id FROM "Keyword" WHERE display_name = :name
-                                """), {"name": kw_name}).fetchone()
-                                
-                                if kw_row:
-                                    kw_uuid = kw_row[0]
-                                else:
-                                    kw_uuid = conn.execute(text("""
-                                        INSERT INTO "Keyword" (display_name)
-                                        VALUES (:name)
-                                        RETURNING keyword_id
-                                    """), {"name": kw_name}).scalar()
+                                # Ưu tiên tìm theo OpenAlex ID
+                                if auth_openalex_id:
+                                    a_row = conn.execute(text("""
+                                        SELECT author_id FROM "Author" WHERE openalex_id = :oid
+                                    """), {"oid": auth_openalex_id}).fetchone()
+                                    if a_row:
+                                        author_uuid = a_row[0]
+                                        
+                                # Tìm theo ORCID nếu không tìm thấy theo OpenAlex ID
+                                if not author_uuid and auth_orcid:
+                                    a_row = conn.execute(text("""
+                                        SELECT author_id FROM "Author" WHERE orcid = :orcid
+                                    """), {"orcid": auth_orcid}).fetchone()
+                                    if a_row:
+                                        author_uuid = a_row[0]
+                                        
+                                # Tìm theo Tên nếu không có ID nào
+                                if not author_uuid:
+                                    a_row = conn.execute(text("""
+                                        SELECT author_id FROM "Author" WHERE display_name = :name AND openalex_id IS NULL AND orcid IS NULL
+                                    """), {"name": auth_name}).fetchone()
+                                    if a_row:
+                                        author_uuid = a_row[0]
+                                        
+                            if not author_uuid:
+                                # Tạo tác giả mới nếu chưa tồn tại
+                                with engine.begin() as conn:
+                                    author_uuid = conn.execute(text("""
+                                        INSERT INTO "Author" (display_name, orcid, openalex_id)
+                                        VALUES (:name, :orcid, :openalex_id)
+                                        RETURNING author_id
+                                    """), {
+                                        "name": auth_name,
+                                        "orcid": auth_orcid,
+                                        "openalex_id": auth_openalex_id
+                                    }).scalar()
                                     
+                                # Liên kết Author và Article
                                 conn.execute(text("""
-                                    INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
-                                    VALUES (:keyword_id, :article_id, :score)
+                                    INSERT INTO "Author_Article" (author_id, article_id)
+                                    VALUES (:author_id, :article_id)
                                     ON CONFLICT DO NOTHING
                                 """), {
-                                    "keyword_id": kw_uuid,
-                                    "article_id": article_uuid,
-                                    "score": kw_score
+                                    "author_id": author_uuid,
+                                    "article_id": article_uuid
                                 })
                                 
-                    # 6. Xử lý Sub_Topic (các chủ đề phụ/chủ đề khác ngoài primary_topic)
-                    topics = work.get("topics", [])
-                    for t_item in topics:
-                        t_name = t_item.get("display_name")
-                        t_score = t_item.get("score", 0.0)
-                        if not t_name:
-                            continue
-                            
-                        with engine.begin() as conn:
-                            sub_t_row = conn.execute(text("""
-                                SELECT topic_id FROM "Topic" WHERE display_name = :name
-                            """), {"name": t_name}).fetchone()
-                            
-                            if sub_t_row:
-                                sub_topic_uuid = sub_t_row[0]
-                            else:
-                                sub_topic_uuid = conn.execute(text("""
-                                    INSERT INTO "Topic" (display_name, score)
-                                    VALUES (:name, :score)
-                                    RETURNING topic_id
-                                """), {"name": t_name, "score": t_score}).scalar()
+                        # 5. Xử lý Keywords
+                        keywords = work.get("keywords", [])
+                        for kw in keywords:
+                            kw_name = kw.get("display_name")
+                            kw_score = kw.get("score", 0.0)
+                            if kw_name:
+                                with engine.begin() as conn:
+                                    kw_row = conn.execute(text("""
+                                        SELECT keyword_id FROM "Keyword" WHERE display_name = :name
+                                    """), {"name": kw_name}).fetchone()
+                                    
+                                    if kw_row:
+                                        kw_uuid = kw_row[0]
+                                    else:
+                                        kw_uuid = conn.execute(text("""
+                                            INSERT INTO "Keyword" (display_name)
+                                            VALUES (:name)
+                                            RETURNING keyword_id
+                                        """), {"name": kw_name}).scalar()
+                                        
+                                    conn.execute(text("""
+                                        INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
+                                        VALUES (:keyword_id, :article_id, :score)
+                                        ON CONFLICT DO NOTHING
+                                    """), {
+                                        "keyword_id": kw_uuid,
+                                        "article_id": article_uuid,
+                                        "score": kw_score
+                                    })
+                                    
+                        # 6. Xử lý Sub_Topic (các chủ đề phụ/chủ đề khác ngoài primary_topic)
+                        topics = work.get("topics", [])
+                        for t_item in topics:
+                            t_name = t_item.get("display_name")
+                            t_score = t_item.get("score", 0.0)
+                            if not t_name:
+                                continue
                                 
-                            conn.execute(text("""
-                                INSERT INTO "Sub_Topic" (article_id, topic_id)
-                                VALUES (:article_id, :topic_id)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "article_id": article_uuid,
-                                "topic_id": sub_topic_uuid
-                            })
+                            with engine.begin() as conn:
+                                sub_t_row = conn.execute(text("""
+                                    SELECT topic_id FROM "Topic" WHERE display_name = :name
+                                """), {"name": t_name}).fetchone()
+                                
+                                if sub_t_row:
+                                    sub_topic_uuid = sub_t_row[0]
+                                else:
+                                    sub_topic_uuid = conn.execute(text("""
+                                        INSERT INTO "Topic" (display_name, score)
+                                        VALUES (:name, :score)
+                                        RETURNING topic_id
+                                    """), {"name": t_name, "score": t_score}).scalar()
+                                    
+                                conn.execute(text("""
+                                    INSERT INTO "Sub_Topic" (article_id, topic_id)
+                                    VALUES (:article_id, :topic_id)
+                                    ON CONFLICT DO NOTHING
+                                """), {
+                                    "article_id": article_uuid,
+                                    "topic_id": sub_topic_uuid
+                                })
 
                     synced_works_count += 1
                 
@@ -961,18 +1068,30 @@ def sync_works(limit: int):
                 current_url = parsed._replace(query=new_query).geturl()
                 page_idx += 1
                 
-            # Cập nhật thời điểm đồng bộ bài báo thành công để lần sau không quét lại
-            with engine.begin() as conn:
-                conn.execute(text("""
-                    UPDATE "Journal"
-                    SET works_synced_at = :synced_at
-                    WHERE journal_id = :journal_id
-                """), {
-                    "synced_at": datetime.now(timezone.utc),
-                    "journal_id": journal_uuid
-                })
-                
-            print(f"  -> SUCCESS: Synced all works for Journal: {journal_name}.")
+            if sync_success:
+                # Cập nhật thời điểm đồng bộ bài báo thành công để lần sau không quét lại
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        UPDATE "Journal"
+                        SET works_synced_at = :synced_at
+                        WHERE journal_id = :journal_id
+                    """), {
+                        "synced_at": datetime.now(timezone.utc),
+                        "journal_id": journal_uuid
+                    })
+                print(f"  -> SUCCESS: Synced all works for Journal: {journal_name}.")
+                consecutive_429 = 0
+            else:
+                if has_429:
+                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
+                    consecutive_429 += 1
+                    if consecutive_429 >= 3:
+                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
+                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
+                        sys.exit(1)
+                else:
+                    consecutive_429 = 0
+                    print(f"  -> FAILED: Could not fetch all works for Journal: {journal_name}.")
         except Exception as e:
             print(f"  -> Request Exception for journal {journal_name}: {e}")
             
