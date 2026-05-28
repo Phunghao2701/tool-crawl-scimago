@@ -724,13 +724,15 @@ def _sync_authors_chunk(engine, chunk, is_orcid, id_to_author, orcid_to_author, 
 def sync_authors(limit: int):
     engine = create_engine(DATABASE_URL)
     
-    # 1. Truy vấn các author chưa đồng bộ chi tiết OpenAlex
+    # 1. Truy vấn các author chưa đồng bộ chi tiết OpenAlex, ưu tiên những người có nhiều bài viết trong DB cục bộ trước
     query = """
-        SELECT author_id, orcid, openalex_id, display_name
-        FROM "Author"
-        WHERE (openalex_synced_at IS NULL OR h_index IS NULL)
-          AND (orcid IS NOT NULL OR openalex_id IS NOT NULL)
-        ORDER BY author_id ASC
+        SELECT a.author_id, a.orcid, a.openalex_id, a.display_name, COUNT(aa.article_id) as local_works_count
+        FROM "Author" a
+        LEFT JOIN "Author_Article" aa ON a.author_id = aa.author_id
+        WHERE (a.openalex_synced_at IS NULL OR a.h_index IS NULL)
+          AND (a.orcid IS NOT NULL OR a.openalex_id IS NOT NULL)
+        GROUP BY a.author_id, a.orcid, a.openalex_id, a.display_name
+        ORDER BY local_works_count DESC, a.author_id ASC
     """
     if limit:
         query += f" LIMIT {limit}"
@@ -777,7 +779,6 @@ def sync_authors(limit: int):
             orcid_to_author[clean_orcid] = author_id
             orcid_to_author[orcid_raw] = author_id
             orcids_to_query.append(clean_orcid)
-            
     chunk_size = 50
     synced_count = 0
     failed_count = 0
