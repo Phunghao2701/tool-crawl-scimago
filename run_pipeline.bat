@@ -20,21 +20,25 @@ echo             SCIMAGO AND OPENALEX ETL PIPELINE CONTROL PANEL
 echo ====================================================================
 echo 1. Setup Environment - DB: Cai dat dependencies, Docker, Schema, Seed
 echo 2. Import Scimago Data: Import file Scimago tho tu thu muc data
-echo 3. Sync OpenAlex Data: Dong bo thong tin chi tiet tu OpenAlex API
-echo 4. Export Report: Xuat bao cao Excel va CSV co chua cot ISSN
-echo 5. View Database Statistics: Xem so lieu thong ke trong database
-echo 6. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
-echo 7. Exit: Thoat
+echo 3. Sync OpenAlex Journals: Dong bo thong tin tap chi tu OpenAlex API
+echo 4. Sync OpenAlex Works: Dong bo bai bao (Works, Topics, Keywords)
+echo 5. Sync OpenAlex Authors: Dong bo chi tiet tac gia (Da luong sieu nhanh)
+echo 6. Export Report: Xuat bao cao Excel va CSV
+echo 7. View Database Statistics: Xem so lieu thong ke trong database
+echo 8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
+echo 9. Exit: Thoat
 echo ====================================================================
-set /p choice="Vui long chon chuc nang (1-7): "
+set /p choice="Vui long chon chuc nang (1-9): "
 
 if "%choice%"=="1" goto setup
 if "%choice%"=="2" goto import
-if "%choice%"=="3" goto sync
-if "%choice%"=="4" goto export
-if "%choice%"=="5" goto stats
-if "%choice%"=="6" goto full
-if "%choice%"=="7" goto exit
+if "%choice%"=="3" goto sync_journals
+if "%choice%"=="4" goto sync_works
+if "%choice%"=="5" goto sync_authors_cmd
+if "%choice%"=="6" goto export
+if "%choice%"=="7" goto stats
+if "%choice%"=="8" goto full
+if "%choice%"=="9" goto exit
 goto menu
 
 :setup
@@ -86,32 +90,64 @@ echo.
 pause
 goto menu
 
-:sync
+:sync_journals
 cls
 call :check_db
 echo ==========================================
-echo  3. SYNC OPENALEX DATA (ALL-IN-ONE)
+echo  3. SYNC OPENALEX JOURNALS
 echo ==========================================
-set /p j_limit="1. Nhap gioi han so tap chi can sync (nhan Enter de sync 50, nhap 0 de sync TOAN BO): "
+set /p j_limit="Nhap gioi han so tap chi can sync (nhan Enter de sync 50, nhap 0 de sync TOAN BO): "
 if "%j_limit%"=="" set j_limit=50
-
-set /p w_limit="2. Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 20, nhap 0 de sync TOAN BO): "
-if "%w_limit%"=="" set w_limit=20
 
 echo.
 echo [INFO] Bat dau dong bo Tap chi (Journals)...
 python tools/openalex_sync.py sync --limit %j_limit%
+echo.
+echo [OK] Dong bo tap chi hoan tat!
+echo.
+pause
+goto menu
+
+:sync_works
+cls
+call :check_db
+echo ==========================================
+echo  4. SYNC OPENALEX WORKS
+echo ==========================================
+set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 20, nhap 0 de sync TOAN BO): "
+if "%w_limit%"=="" set w_limit=20
 
 echo.
 echo [INFO] Bat dau dong bo Bai bao (Works, Topics, Keywords)...
 python tools/openalex_sync.py sync-works --limit %w_limit%
+echo.
+echo [OK] Dong bo bai bao hoan tat!
+echo.
+pause
+goto menu
+
+:sync_authors_cmd
+cls
+call :check_db
+echo ==========================================
+echo  5. SYNC OPENALEX AUTHORS
+echo ==========================================
+set a_limit=
+set /p a_limit="Nhap gioi han so tac gia can sync (nhan Enter de sync TOAN BO): "
 
 echo.
-echo [INFO] Bat dau dong bo Tac gia (Authors)...
+if "%a_limit%"=="" goto sync_all_authors
+echo [INFO] Bat dau dong bo %a_limit% Tac gia (Da luong)...
+python tools/openalex_sync.py sync-authors --limit %a_limit%
+goto sync_authors_end
+
+:sync_all_authors
+echo [INFO] Bat dau dong bo toan bo Tac gia (Da luong)...
 python tools/openalex_sync.py sync-authors
 
+:sync_authors_end
 echo.
-echo [OK] Hoan thanh dong bo toan bo du lieu OpenAlex!
+echo [OK] Dong bo tac gia hoan tat!
 echo.
 pause
 goto menu
@@ -120,7 +156,7 @@ goto menu
 cls
 call :check_db
 echo ==========================================
-echo  4. EXPORT REPORT (EXCEL AND CSV)
+echo  6. EXPORT REPORT (EXCEL AND CSV)
 echo ==========================================
 echo  1. Export Journal Report (Mac dinh)
 echo  2. Export Author Report
@@ -152,7 +188,7 @@ goto menu
 cls
 call :check_db
 echo ==========================================
-echo  5. DATABASE STATISTICS
+echo  7. DATABASE STATISTICS
 echo ==========================================
 python tools/openalex_sync.py stats
 python tools/openalex_sync.py stats-authors
@@ -165,7 +201,7 @@ goto menu
 cls
 call :check_db
 echo ==========================================
-echo  6. RUN FULL PIPELINE (IMPORT - SYNC - EXPORT)
+echo  8. RUN FULL PIPELINE (IMPORT - SYNC - EXPORT)
 echo ==========================================
 echo [INFO] Ban co the keo tha truc tiep file tu Windows Explorer vao cua so nay.
 set /p filepath="Nhap duong dan file (Mac dinh: data/scimagojr 2025.csv): "

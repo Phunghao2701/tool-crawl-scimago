@@ -14,6 +14,8 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -129,6 +131,42 @@ def safe_get(url, headers=None, timeout=15):
         status_code = 429
         def json(self): return {}
     return FakeResponse429()
+
+
+def get_or_create_subject_info(conn, field_name, subfield_name):
+    subject_area_id = None
+    subject_category_id = None
+    
+    if field_name:
+        area_row = conn.execute(text("""
+            SELECT subject_area_id FROM "Subject_Area" WHERE LOWER(display_name) = LOWER(:name)
+        """), {"name": field_name}).fetchone()
+        if area_row:
+            subject_area_id = area_row[0]
+        else:
+            subject_area_id = conn.execute(text("""
+                INSERT INTO "Subject_Area" (display_name)
+                VALUES (:name)
+                RETURNING subject_area_id
+            """), {"name": field_name}).scalar()
+            
+    if subfield_name:
+        cat_row = conn.execute(text("""
+            SELECT subject_category_id FROM "Subject_Category" WHERE LOWER(display_name) = LOWER(:name)
+        """), {"name": subfield_name}).fetchone()
+        if cat_row:
+            subject_category_id = cat_row[0]
+        else:
+            # Tạo code ngẫu nhiên hoặc để trống nếu DB cho phép NULL
+            # Vì code là UNIQUE, nếu ta để NULL thì PostgreSQL cho phép nhiều dòng NULL
+            # nhưng nếu chèn rỗng/NULL thì an toàn nhất.
+            subject_category_id = conn.execute(text("""
+                INSERT INTO "Subject_Category" (subject_area_id, display_name)
+                VALUES (:area_id, :name)
+                RETURNING subject_category_id
+            """), {"area_id": subject_area_id, "name": subfield_name}).scalar()
+            
+    return subject_area_id, subject_category_id
 
 
 def split_issns(v: str):
@@ -580,6 +618,109 @@ def cmd_export(args):
         print(f"[ERROR] Failed to export data: {e}")
 
 
+def update_author_in_db(engine, author_id, data):
+    openalex_id = data.get("id")
+    orcid = data.get("orcid")
+    disp_name = data.get("display_name")
+    works_count = data.get("works_count")
+    cited_by_count = data.get("cited_by_count")
+    
+    summary_stats = data.get("summary_stats") or {}
+    h_index = summary_stats.get("h_index")
+    i10_index = summary_stats.get("i10_index")
+    
+    last_inst_list = data.get("last_known_institutions") or []
+    last_inst_name = None
+    last_inst_id = None
+    if last_inst_list:
+        last_inst_name = last_inst_list[0].get("display_name")
+        last_inst_id = last_inst_list[0].get("id")
+        
+    homepage_url = data.get("homepage_url")
+    
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE "Author"
+            SET openalex_id = :openalex_id,
+                orcid = :orcid,
+                display_name = COALESCE(:disp_name, display_name),
+                works_count = :works_count,
+                cited_by_count = :cited_by_count,
+                h_index = :h_index,
+                i10_index = :i10_index,
+                last_known_institution = :last_inst_name,
+                last_known_institution_id = :last_inst_id,
+                homepage_url = :homepage_url,
+                openalex_synced_at = :synced_at
+            WHERE author_id = :author_id
+        """), {
+            "openalex_id": openalex_id,
+            "orcid": orcid,
+            "disp_name": disp_name,
+            "works_count": works_count,
+            "cited_by_count": cited_by_count,
+            "h_index": h_index,
+            "i10_index": i10_index,
+            "last_inst_name": last_inst_name,
+            "last_inst_id": last_inst_id,
+            "homepage_url": homepage_url,
+            "synced_at": datetime.now(timezone.utc),
+            "author_id": author_id
+        })
+
+
+def _sync_authors_chunk(engine, chunk, is_orcid, id_to_author, orcid_to_author, author_map):
+    local_synced = 0
+    
+    if is_orcid:
+        formatted_orcids = []
+        for orcid in chunk:
+            if not orcid.startswith("https://orcid.org/"):
+                formatted_orcids.append(f"https://orcid.org/{orcid}")
+            else:
+                formatted_orcids.append(orcid)
+        filter_str = "|".join(formatted_orcids)
+        url = f"https://api.openalex.org/authors?filter=orcid:{filter_str}&per_page=100"
+    else:
+        filter_str = "|".join(chunk)
+        url = f"https://api.openalex.org/authors?filter=openalex:{filter_str}&per_page=100"
+
+    # Tránh spam API bằng cách sleep nhẹ giữa các luồng
+    time.sleep(0.1)
+    response = safe_get(url, timeout=25)
+    
+    if response.status_code == 200:
+        results = response.json().get("results", [])
+        for data in results:
+            author_id = None
+            if is_orcid:
+                orcid = data.get("orcid")
+                clean_orcid = orcid.replace("https://orcid.org/", "").strip() if orcid else None
+                if clean_orcid in orcid_to_author:
+                    author_id = orcid_to_author[clean_orcid]
+                elif orcid in orcid_to_author:
+                    author_id = orcid_to_author[orcid]
+            else:
+                oa_id = data.get("id")
+                clean_oa_id = oa_id.split("/")[-1] if oa_id else None
+                if clean_oa_id in id_to_author:
+                    author_id = id_to_author[clean_oa_id]
+                elif oa_id in id_to_author:
+                    author_id = id_to_author[oa_id]
+                    
+            if author_id:
+                author_map[author_id]["found"] = True
+                update_author_in_db(engine, author_id, data)
+                local_synced += 1
+    elif response.status_code == 429:
+        print("[CRITICAL] OpenAlex API has blocked your IP (HTTP 429). Stop requested.")
+        return -1
+    else:
+        print(f"  [ERROR] Failed to query chunk (HTTP {response.status_code})")
+        
+    return local_synced
+
+
 def sync_authors(limit: int):
     engine = create_engine(DATABASE_URL)
     
@@ -601,142 +742,134 @@ def sync_authors(limit: int):
         print("[INFO] No authors need synchronization.")
         return
 
-    try:
-        print(f"[sync-authors] Starting synchronization for {len(authors)} authors...")
+    print(f"[sync-authors] Starting bulk synchronization for {len(authors)} authors...")
+    
+    # Bản đồ mapping nhanh ID -> author_id và ORCID -> author_id
+    id_to_author = {}
+    orcid_to_author = {}
+    
+    author_ids_to_query = []
+    orcids_to_query = []
+    
+    author_map = {}
+    
+    for author in authors:
+        author_id = author[0]
+        orcid_raw = author[1]
+        openalex_id_raw = author[2]
+        display_name = author[3] or "Unknown"
         
-        synced_count = 0
-        failed_count = 0
-        consecutive_429 = 0
+        author_map[author_id] = {
+            "id": author_id,
+            "display_name": display_name,
+            "orcid": orcid_raw,
+            "openalex_id": openalex_id_raw,
+            "found": False
+        }
         
-        for idx, author in enumerate(authors, 1):
-            author_id = author[0]
-            orcid_raw = author[1]
-            openalex_id_raw = author[2]
-            display_name = author[3] or "Unknown"
+        if openalex_id_raw:
+            clean_id = openalex_id_raw.split("/")[-1] if "/" in openalex_id_raw else openalex_id_raw
+            id_to_author[clean_id] = author_id
+            id_to_author[openalex_id_raw] = author_id
+            author_ids_to_query.append(clean_id)
+        elif orcid_raw:
+            clean_orcid = orcid_raw.replace("https://orcid.org/", "").strip()
+            orcid_to_author[clean_orcid] = author_id
+            orcid_to_author[orcid_raw] = author_id
+            orcids_to_query.append(clean_orcid)
             
-            print(f"[{idx}/{len(authors)}] Syncing Author: {display_name} (ORCID: {orcid_raw}, OpenAlex ID: {openalex_id_raw})")
+    chunk_size = 50
+    synced_count = 0
+    failed_count = 0
+    max_workers = 8  # Số lượng workers để chạy đa luồng đồng thời
+    
+    # --- LUỒNG 1: Gom theo openalex_id ---
+    if author_ids_to_query:
+        print(f"[sync-authors] Querying {len(author_ids_to_query)} authors by OpenAlex ID in parallel using {max_workers} threads...")
+        chunks = [author_ids_to_query[i:i+chunk_size] for i in range(0, len(author_ids_to_query), chunk_size)]
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _sync_authors_chunk, engine, chunk, False, id_to_author, orcid_to_author, author_map
+                ): idx for idx, chunk in enumerate(chunks)
+            }
             
-            url = None
-            if openalex_id_raw:
-                # Lấy phần ID cuối cùng (ví dụ: A5016258957 hoặc url đầy đủ)
-                aid = openalex_id_raw.split("/")[-1] if "/" in openalex_id_raw else openalex_id_raw
-                url = f"https://api.openalex.org/authors/{aid}"
-            elif orcid_raw:
-                clean_orcid_val = orcid_raw.split("orcid.org/")[-1] if "orcid.org/" in orcid_raw else orcid_raw
-                url = f"https://api.openalex.org/authors/https://orcid.org/{clean_orcid_val}"
-                
-            if not url:
-                print("  -> SKIPPED: No valid ID/ORCID found.")
-                failed_count += 1
-                continue
-                
-            try:
-                time.sleep(0.2) # Polite pool rate limit
-                response = safe_get(url, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    openalex_id = data.get("id")
-                    orcid = data.get("orcid")
-                    disp_name = data.get("display_name")
-                    works_count = data.get("works_count")
-                    cited_by_count = data.get("cited_by_count")
-                    
-                    summary_stats = data.get("summary_stats") or {}
-                    h_index = summary_stats.get("h_index")
-                    i10_index = summary_stats.get("i10_index")
-                    
-                    last_inst_list = data.get("last_known_institutions") or []
-                    last_inst_name = None
-                    last_inst_id = None
-                    if last_inst_list:
-                        last_inst_name = last_inst_list[0].get("display_name")
-                        last_inst_id = last_inst_list[0].get("id")
-                        
-                    homepage_url = data.get("homepage_url")
-                    
-                    with engine.begin() as conn:
-                        conn.execute(text("""
-                            UPDATE "Author"
-                            SET openalex_id = :openalex_id,
-                                orcid = :orcid,
-                                display_name = COALESCE(:disp_name, display_name),
-                                works_count = :works_count,
-                                cited_by_count = :cited_by_count,
-                                h_index = :h_index,
-                                i10_index = :i10_index,
-                                last_known_institution = :last_inst_name,
-                                last_known_institution_id = :last_inst_id,
-                                homepage_url = :homepage_url,
-                                openalex_synced_at = :synced_at
-                            WHERE author_id = :author_id
-                        """), {
-                            "openalex_id": openalex_id,
-                            "orcid": orcid,
-                            "disp_name": disp_name,
-                            "works_count": works_count,
-                            "cited_by_count": cited_by_count,
-                            "h_index": h_index,
-                            "i10_index": i10_index,
-                            "last_inst_name": last_inst_name,
-                            "last_inst_id": last_inst_id,
-                            "homepage_url": homepage_url,
-                            "synced_at": datetime.now(timezone.utc),
-                            "author_id": author_id
-                        })
-                    
-                    print(f"  -> SUCCESS: Name={disp_name}, Works={works_count}, Cites={cited_by_count}, H-index={h_index}")
-                    synced_count += 1
-                    consecutive_429 = 0
-                elif response.status_code == 429:
-                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
-                    consecutive_429 += 1
-                    if consecutive_429 >= 3:
-                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
-                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    res = future.result()
+                    if res == -1:
+                        print("[CRITICAL] Stopping process due to API Rate Limit (429).")
                         sys.exit(1)
-                else:
-                    consecutive_429 = 0
-                    # Đánh dấu thời điểm quét thất bại thực sự để tránh lặp vô hạn
-                    with engine.begin() as conn:
-                        conn.execute(text("""
-                            UPDATE "Author"
-                            SET openalex_synced_at = :synced_at
-                            WHERE author_id = :author_id
-                        """), {
-                            "synced_at": datetime.now(timezone.utc),
-                            "author_id": author_id
-                        })
-                    print(f"  -> FAILED: OpenAlex API returned HTTP {response.status_code}")
-                    failed_count += 1
-            except Exception as e:
-                print(f"  -> Request Exception: {e}")
-                failed_count += 1
-    finally:
-        pass
+                    synced_count += res
+                    print(f"  -> Finished ID chunk {idx+1}/{len(chunks)} ({res} authors updated)")
+                except Exception as e:
+                    print(f"  [ERROR] Thread failed processing ID chunk {idx+1}: {e}")
+                    
+    # --- LUỒNG 2: Gom theo orcid ---
+    if orcids_to_query:
+        print(f"[sync-authors] Querying {len(orcids_to_query)} authors by ORCID in parallel using {max_workers} threads...")
+        chunks = [orcids_to_query[i:i+chunk_size] for i in range(0, len(orcids_to_query), chunk_size)]
         
-    print(f"\n[sync-authors] Finished! Synced: {synced_count}, Failed/Skipped: {failed_count}")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _sync_authors_chunk, engine, chunk, True, id_to_author, orcid_to_author, author_map
+                ): idx for idx, chunk in enumerate(chunks)
+            }
+            
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    res = future.result()
+                    if res == -1:
+                        print("[CRITICAL] Stopping process due to API Rate Limit (429).")
+                        sys.exit(1)
+                    synced_count += res
+                    print(f"  -> Finished ORCID chunk {idx+1}/{len(chunks)} ({res} authors updated)")
+                except Exception as e:
+                    print(f"  [ERROR] Thread failed processing ORCID chunk {idx+1}: {e}")
+                    
+    # --- LUỒNG 3: Đánh dấu các tác giả không tìm thấy ---
+    not_found_authors = [v for v in author_map.values() if not v["found"]]
+    if not_found_authors:
+        print(f"[sync-authors] Marking {len(not_found_authors)} authors not found in OpenAlex as scanned...")
+        # Để an toàn ghi nhận DB tuần tự trong thread chính
+        with engine.begin() as conn:
+            for item in not_found_authors:
+                conn.execute(text("""
+                    UPDATE "Author"
+                    SET openalex_synced_at = :synced_at
+                    WHERE author_id = :author_id
+                """), {
+                    "synced_at": datetime.now(timezone.utc),
+                    "author_id": item["id"]
+                })
+                failed_count += 1
+                
+    print(f"\n[sync-authors] Finished! Synced: {synced_count}, Not Found/Skipped: {failed_count}")
 
 
 def cmd_stats_authors():
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         total = conn.execute(text('SELECT COUNT(*) FROM "Author"')).scalar()
-        synced = conn.execute(text('SELECT COUNT(*) FROM "Author" WHERE openalex_id IS NOT NULL')).scalar()
+        synced = conn.execute(text('SELECT COUNT(*) FROM "Author" WHERE openalex_synced_at IS NOT NULL')).scalar()
         unsynced = conn.execute(text('SELECT COUNT(*) FROM "Author" WHERE openalex_synced_at IS NULL AND (orcid IS NOT NULL OR openalex_id IS NOT NULL)')).scalar()
         
         print("\n[OpenAlex Author Sync Stats]")
         print(f"  Total authors in DB:       {total:,}")
         pct = (synced / total * 100) if total > 0 else 0.0
-        print(f"  Synced with OpenAlex:      {synced:,} ({pct:.1f}%)")
-        print(f"  Pending sync (with IDs):   {unsynced:,}")
+        print(f"  Synced details from OpenAlex: {synced:,} ({pct:.1f}%)")
+        print(f"  Pending sync details:      {unsynced:,}")
         
         if synced > 0:
             print("\n[Latest Synced Authors Sample]")
             rows = conn.execute(text("""
                 SELECT display_name, orcid, openalex_id, works_count, cited_by_count, h_index, last_known_institution
                 FROM "Author"
-                WHERE openalex_id IS NOT NULL
+                WHERE openalex_synced_at IS NOT NULL
                 ORDER BY openalex_synced_at DESC
                 LIMIT 10
             """)).fetchall()
@@ -806,6 +939,365 @@ def cmd_export_authors(args):
         print(f"[ERROR] Failed to export author data: {e}")
 
 
+def _db_process_single_work(
+    conn, work, journal_uuid,
+    topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
+    keyword_cache, volume_cache, issue_cache
+):
+    work_title = work.get("title")
+    if not work_title:
+        return
+        
+    # Rút ngắn tiêu đề nếu quá dài để tránh lỗi db varchar
+    work_title = work_title[:255]
+    doi = work.get("doi")
+    pub_year = work.get("publication_year")
+    
+    # Trích xuất Abstract từ abstract_inverted_index
+    abstract = None
+    inv_index = work.get("abstract_inverted_index")
+    if inv_index:
+        try:
+            word_list = []
+            for word, pos_list in inv_index.items():
+                for pos in pos_list:
+                    word_list.append((pos, word))
+            word_list.sort()
+            abstract = " ".join([w[1] for w in word_list])
+        except Exception:
+            pass
+    if abstract:
+        abstract = abstract[:2000]
+        
+    # 1.5 Xử lý Volume và Issue
+    import re
+    biblio = work.get("biblio", {})
+    volume_raw = biblio.get("volume")
+    issue_raw = biblio.get("issue")
+    
+    volume_number = None
+    if volume_raw is not None:
+        match = re.search(r'\d+', str(volume_raw))
+        if match:
+            try:
+                volume_number = int(match.group())
+            except ValueError:
+                pass
+                
+    volume_uuid = None
+    if volume_number is not None:
+        vol_key = (volume_number, pub_year)
+        if vol_key in volume_cache:
+            volume_uuid = volume_cache[vol_key]
+        else:
+            v_row = conn.execute(text("""
+                SELECT volume_id FROM "Volume"
+                WHERE journal_id = :journal_id AND volume_number = :volume_number AND publication_year = :year
+            """), {
+                "journal_id": journal_uuid,
+                "volume_number": volume_number,
+                "year": pub_year
+            }).fetchone()
+            
+            if v_row:
+                volume_uuid = v_row[0]
+            else:
+                volume_uuid = conn.execute(text("""
+                    INSERT INTO "Volume" (journal_id, volume_number, publication_year)
+                    VALUES (:journal_id, :volume_number, :year)
+                    RETURNING volume_id
+                """), {
+                    "journal_id": journal_uuid,
+                    "volume_number": volume_number,
+                    "year": pub_year
+                }).scalar()
+            volume_cache[vol_key] = volume_uuid
+                
+    issue_uuid = None
+    if volume_uuid is not None and issue_raw is not None:
+        issue_str = str(issue_raw)[:50]
+        iss_key = (volume_uuid, issue_str, pub_year)
+        if iss_key in issue_cache:
+            issue_uuid = issue_cache[iss_key]
+        else:
+            i_row = conn.execute(text("""
+                SELECT issue_id FROM "Issue"
+                WHERE volume_id = :volume_id AND issue_number = :issue_number AND publication_year = :year
+            """), {
+                "volume_id": volume_uuid,
+                "issue_number": issue_str,
+                "year": pub_year
+            }).fetchone()
+            
+            if i_row:
+                issue_uuid = i_row[0]
+            else:
+                issue_uuid = conn.execute(text("""
+                    INSERT INTO "Issue" (volume_id, issue_number, publication_year)
+                    VALUES (:volume_id, :issue_number, :year)
+                    RETURNING issue_id
+                """), {
+                    "volume_id": volume_uuid,
+                    "issue_number": issue_str,
+                    "year": pub_year
+                }).scalar()
+            issue_cache[iss_key] = issue_uuid
+            
+    # 2. Xử lý primary_topic
+    primary_topic = work.get("primary_topic")
+    primary_topic_uuid = None
+    if primary_topic:
+        t_name = primary_topic.get("display_name")
+        t_score = primary_topic.get("score")
+        if t_score is not None:
+            try:
+                t_score = float(t_score)
+            except ValueError:
+                t_score = 0.0
+        else:
+            t_score = 0.0
+            
+        field_data = primary_topic.get("field") or {}
+        field_name = field_data.get("display_name")
+        
+        subfield_data = primary_topic.get("subfield") or {}
+        subfield_name = subfield_data.get("display_name")
+        
+        if t_name:
+            if t_name in topic_cache:
+                primary_topic_uuid = topic_cache[t_name]
+            else:
+                subject_area_id, subject_category_id = get_or_create_subject_info(
+                    conn, field_name, subfield_name
+                )
+                
+                t_row = conn.execute(text("""
+                    SELECT topic_id FROM "Topic" WHERE display_name = :name
+                """), {"name": t_name}).fetchone()
+                
+                if t_row:
+                    primary_topic_uuid = t_row[0]
+                    conn.execute(text("""
+                        UPDATE "Topic"
+                        SET subject_area_id = COALESCE(subject_area_id, :area_id),
+                            subject_category_id = COALESCE(subject_category_id, :cat_id),
+                            score = :score
+                        WHERE topic_id = :topic_id
+                    """), {
+                        "area_id": subject_area_id,
+                        "cat_id": subject_category_id,
+                        "score": t_score,
+                        "topic_id": primary_topic_uuid
+                    })
+                else:
+                    primary_topic_uuid = conn.execute(text("""
+                        INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
+                        VALUES (:name, :score, :area_id, :cat_id)
+                        RETURNING topic_id
+                    """), {
+                        "name": t_name, 
+                        "score": t_score,
+                        "area_id": subject_area_id,
+                        "cat_id": subject_category_id
+                    }).scalar()
+                topic_cache[t_name] = primary_topic_uuid
+                    
+    # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
+    article_uuid = None
+    art_row = conn.execute(text("""
+        SELECT article_id FROM "Article" WHERE title = :title AND issue_id = :issue_id
+    """), {
+        "title": work_title,
+        "issue_id": issue_uuid
+    }).fetchone()
+    
+    if art_row:
+        article_uuid = art_row[0]
+    else:
+        article_uuid = conn.execute(text("""
+            INSERT INTO "Article" (title, doi, abstract, issue_id, publication_year, primary_topic)
+            VALUES (:title, :doi, :abstract, :issue_id, :pub_year, :primary_topic)
+            RETURNING article_id
+        """), {
+            "title": work_title,
+            "doi": doi,
+            "abstract": abstract,
+            "issue_id": issue_uuid,
+            "pub_year": pub_year,
+            "primary_topic": primary_topic_uuid
+        }).scalar()
+            
+    # 4. Xử lý Authorship (Tác giả và liên kết tác giả với bài viết)
+    authorships = work.get("authorships", [])
+    for auth_item in authorships:
+        author_data = auth_item.get("author", {})
+        auth_name = author_data.get("display_name")
+        auth_orcid = author_data.get("orcid")
+        auth_openalex_id = author_data.get("id")
+        
+        if auth_name:
+            author_uuid = None
+            
+            # 4.1 Tra cứu cache trước
+            if auth_openalex_id and auth_openalex_id in author_id_cache:
+                author_uuid = author_id_cache[auth_openalex_id]
+            elif auth_orcid and auth_orcid in author_orcid_cache:
+                author_uuid = author_orcid_cache[auth_orcid]
+            elif not auth_openalex_id and not auth_orcid and auth_name in author_name_cache:
+                author_uuid = author_name_cache[auth_name]
+                
+            # 4.2 Nếu không có trong cache, truy vấn DB
+            if not author_uuid:
+                # Ưu tiên tìm theo OpenAlex ID
+                if auth_openalex_id:
+                    a_row = conn.execute(text("""
+                        SELECT author_id FROM "Author" WHERE openalex_id = :oid
+                    """), {"oid": auth_openalex_id}).fetchone()
+                    if a_row:
+                        author_uuid = a_row[0]
+                        
+                # Tìm theo ORCID nếu không tìm thấy theo OpenAlex ID
+                if not author_uuid and auth_orcid:
+                    a_row = conn.execute(text("""
+                        SELECT author_id FROM "Author" WHERE orcid = :orcid
+                    """), {"orcid": auth_orcid}).fetchone()
+                    if a_row:
+                        author_uuid = a_row[0]
+                        
+                # Tìm theo Tên nếu không có ID nào
+                if not author_uuid:
+                    a_row = conn.execute(text("""
+                        SELECT author_id FROM "Author" WHERE display_name = :name AND openalex_id IS NULL AND orcid IS NULL
+                    """), {"name": auth_name}).fetchone()
+                    if a_row:
+                        author_uuid = a_row[0]
+                        
+            # 4.3 Nếu vẫn không tìm thấy, tạo tác giả mới
+            if not author_uuid:
+                author_uuid = conn.execute(text("""
+                    INSERT INTO "Author" (display_name, orcid, openalex_id)
+                    VALUES (:name, :orcid, :openalex_id)
+                    RETURNING author_id
+                """), {
+                    "name": auth_name,
+                    "orcid": auth_orcid,
+                    "openalex_id": auth_openalex_id
+                }).scalar()
+                
+            # 4.4 Cập nhật cache
+            if auth_openalex_id:
+                author_id_cache[auth_openalex_id] = author_uuid
+            if auth_orcid:
+                author_orcid_cache[auth_orcid] = author_uuid
+            if not auth_openalex_id and not auth_orcid:
+                author_name_cache[auth_name] = author_uuid
+                
+            # Liên kết Author và Article
+            if author_uuid and article_uuid:
+                conn.execute(text("""
+                    INSERT INTO "Author_Article" (author_id, article_id)
+                    VALUES (:author_id, :article_id)
+                    ON CONFLICT DO NOTHING
+                """), {
+                    "author_id": author_uuid,
+                    "article_id": article_uuid
+                })
+                
+    # 5. Xử lý Keywords
+    keywords = work.get("keywords", [])
+    for kw in keywords:
+        kw_name = kw.get("display_name")
+        kw_score = kw.get("score", 0.0)
+        if kw_name:
+            if kw_name in keyword_cache:
+                kw_uuid = keyword_cache[kw_name]
+            else:
+                kw_row = conn.execute(text("""
+                    SELECT keyword_id FROM "Keyword" WHERE display_name = :name
+                """), {"name": kw_name}).fetchone()
+                
+                if kw_row:
+                    kw_uuid = kw_row[0]
+                else:
+                    kw_uuid = conn.execute(text("""
+                        INSERT INTO "Keyword" (display_name)
+                        VALUES (:name)
+                        RETURNING keyword_id
+                    """), {"name": kw_name}).scalar()
+                keyword_cache[kw_name] = kw_uuid
+                    
+            conn.execute(text("""
+                INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
+                VALUES (:keyword_id, :article_id, :score)
+                ON CONFLICT DO NOTHING
+            """), {
+                "keyword_id": kw_uuid,
+                "article_id": article_uuid,
+                "score": kw_score
+            })
+            
+    # 6. Xử lý Sub_Topic (các chủ đề phụ/chủ đề khác ngoài primary_topic)
+    topics = work.get("topics", [])
+    for t_item in topics:
+        t_name = t_item.get("display_name")
+        t_score = t_item.get("score", 0.0)
+        if not t_name:
+            continue
+            
+        field_data = t_item.get("field") or {}
+        field_name = field_data.get("display_name")
+        
+        subfield_data = t_item.get("subfield") or {}
+        subfield_name = subfield_data.get("display_name")
+        
+        if t_name in topic_cache:
+            sub_topic_uuid = topic_cache[t_name]
+        else:
+            subject_area_id, subject_category_id = get_or_create_subject_info(
+                conn, field_name, subfield_name
+            )
+            
+            sub_t_row = conn.execute(text("""
+                SELECT topic_id FROM "Topic" WHERE display_name = :name
+            """), {"name": t_name}).fetchone()
+            
+            if sub_t_row:
+                sub_topic_uuid = sub_t_row[0]
+                conn.execute(text("""
+                    UPDATE "Topic"
+                    SET subject_area_id = COALESCE(subject_area_id, :area_id),
+                        subject_category_id = COALESCE(subject_category_id, :cat_id),
+                        score = :score
+                    WHERE topic_id = :topic_id
+                """), {
+                    "area_id": subject_area_id,
+                    "cat_id": subject_category_id,
+                    "score": t_score,
+                    "topic_id": sub_topic_uuid
+                })
+            else:
+                sub_topic_uuid = conn.execute(text("""
+                    INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
+                    VALUES (:name, :score, :area_id, :cat_id)
+                    RETURNING topic_id
+                """), {
+                    "name": t_name, 
+                    "score": t_score,
+                    "area_id": subject_area_id,
+                    "cat_id": subject_category_id
+                }).scalar()
+            topic_cache[t_name] = sub_topic_uuid
+            
+        conn.execute(text("""
+            INSERT INTO "Sub_Topic" (article_id, topic_id)
+            VALUES (:article_id, :topic_id)
+            ON CONFLICT DO NOTHING
+        """), {
+            "article_id": article_uuid,
+            "topic_id": sub_topic_uuid
+        })
+
+
 def sync_works(limit: int):
     engine = create_engine(DATABASE_URL)
     
@@ -825,6 +1317,13 @@ def sync_works(limit: int):
         
     print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
     
+    # Cache toàn cục trong suốt lượt chạy sync_works
+    topic_cache = {}          # key: display_name -> topic_id
+    author_id_cache = {}      # key: openalex_id -> author_id
+    author_orcid_cache = {}   # key: orcid -> author_id
+    author_name_cache = {}    # key: display_name -> author_id
+    keyword_cache = {}        # key: display_name -> keyword_id
+    
     synced_works_count = 0
     consecutive_429 = 0
     
@@ -832,6 +1331,10 @@ def sync_works(limit: int):
         journal_uuid = journal[0]
         openalex_id = journal[1]
         journal_name = journal[2]
+        
+        # Cache cục bộ cho tạp chí hiện tại
+        volume_cache = {}  # key: (volume_number, publication_year) -> volume_id
+        issue_cache = {}   # key: (volume_id, issue_number, publication_year) -> issue_id
         
         print(f"[{idx}/{len(journals)}] Fetching works for Journal: {journal_name} ({openalex_id})")
         
@@ -882,274 +1385,14 @@ def sync_works(limit: int):
                     
                 print(f"  -> Processing {len(works)} works on page {page_idx}...")
                 
-                for work in works:
-                    work_title = work.get("title")
-                    if not work_title:
-                        continue
-                        
-                    # Rút ngắn tiêu đề nếu quá dài để tránh lỗi db varchar
-                    work_title = work_title[:255]
-                    doi = work.get("doi")
-                    pub_year = work.get("publication_year")
-                    
-                    # Trích xuất Abstract từ abstract_inverted_index
-                    abstract = None
-                    inv_index = work.get("abstract_inverted_index")
-                    if inv_index:
-                        try:
-                            word_list = []
-                            for word, pos_list in inv_index.items():
-                                for pos in pos_list:
-                                    word_list.append((pos, word))
-                            word_list.sort()
-                            abstract = " ".join([w[1] for w in word_list])
-                        except Exception:
-                            pass
-                    if abstract:
-                        abstract = abstract[:2000]
-                    # 1.5 Xử lý Volume và Issue
-                    import re
-                    biblio = work.get("biblio", {})
-                    volume_raw = biblio.get("volume")
-                    issue_raw = biblio.get("issue")
-                    
-                    volume_number = None
-                    if volume_raw is not None:
-                        match = re.search(r'\d+', str(volume_raw))
-                        if match:
-                            try:
-                                volume_number = int(match.group())
-                            except ValueError:
-                                pass
-                                
-                    volume_uuid = None
-                    if volume_number is not None:
-                        with engine.begin() as conn:
-                            v_row = conn.execute(text("""
-                                SELECT volume_id FROM "Volume"
-                                WHERE journal_id = :journal_id AND volume_number = :volume_number AND publication_year = :year
-                            """), {
-                                "journal_id": journal_uuid,
-                                "volume_number": volume_number,
-                                "year": pub_year
-                            }).fetchone()
-                            
-                            if v_row:
-                                volume_uuid = v_row[0]
-                            else:
-                                volume_uuid = conn.execute(text("""
-                                    INSERT INTO "Volume" (journal_id, volume_number, publication_year)
-                                    VALUES (:journal_id, :volume_number, :year)
-                                    RETURNING volume_id
-                                """), {
-                                    "journal_id": journal_uuid,
-                                    "volume_number": volume_number,
-                                    "year": pub_year
-                                }).scalar()
-                                
-                    issue_uuid = None
-                    if volume_uuid is not None and issue_raw is not None:
-                        issue_str = str(issue_raw)[:50]
-                        with engine.begin() as conn:
-                            i_row = conn.execute(text("""
-                                SELECT issue_id FROM "Issue"
-                                WHERE volume_id = :volume_id AND issue_number = :issue_number AND publication_year = :year
-                            """), {
-                                "volume_id": volume_uuid,
-                                "issue_number": issue_str,
-                                "year": pub_year
-                            }).fetchone()
-                            
-                            if i_row:
-                                issue_uuid = i_row[0]
-                            else:
-                                issue_uuid = conn.execute(text("""
-                                    INSERT INTO "Issue" (volume_id, issue_number, publication_year)
-                                    VALUES (:volume_id, :issue_number, :year)
-                                    RETURNING issue_id
-                                """), {
-                                    "volume_id": volume_uuid,
-                                    "issue_number": issue_str,
-                                    "year": pub_year
-                                }).scalar()
-
-                    # 2. Xử lý primary_topic
-                    primary_topic = work.get("primary_topic")
-                    primary_topic_uuid = None
-                    if primary_topic:
-                        t_name = primary_topic.get("display_name")
-                        t_score = primary_topic.get("score")
-                        if t_score is not None:
-                            try:
-                                t_score = float(t_score)
-                            except ValueError:
-                                t_score = 0.0
-                        else:
-                            t_score = 0.0
-                        if t_name:
-                            with engine.begin() as conn:
-                                t_row = conn.execute(text("""
-                                    SELECT topic_id FROM "Topic" WHERE display_name = :name
-                                """), {"name": t_name}).fetchone()
-                                
-                                if t_row:
-                                    primary_topic_uuid = t_row[0]
-                                else:
-                                    primary_topic_uuid = conn.execute(text("""
-                                        INSERT INTO "Topic" (display_name, score)
-                                        VALUES (:name, :score)
-                                        RETURNING topic_id
-                                    """), {"name": t_name, "score": t_score}).scalar()
-                                    
-                    # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
-                    article_uuid = None
-                    with engine.begin() as conn:
-                        art_row = conn.execute(text("""
-                            SELECT article_id FROM "Article" WHERE title = :title AND issue_id = :issue_id
-                        """), {
-                            "title": work_title,
-                            "issue_id": issue_uuid
-                        }).fetchone()
-                        
-                        if art_row:
-                            article_uuid = art_row[0]
-                        else:
-                            article_uuid = conn.execute(text("""
-                                INSERT INTO "Article" (title, doi, abstract, issue_id, publication_year, primary_topic)
-                                VALUES (:title, :doi, :abstract, :issue_id, :pub_year, :primary_topic)
-                                RETURNING article_id
-                            """), {
-                                "title": work_title,
-                                "doi": doi,
-                                "abstract": abstract,
-                                "issue_id": issue_uuid,
-                                "pub_year": pub_year,
-                                "primary_topic": primary_topic_uuid
-                            }).scalar()
-                            
-                    # 4. Xử lý Authorship (Tác giả và liên kết tác giả với bài viết)
-                    authorships = work.get("authorships", [])
-                    for auth_item in authorships:
-                        author_data = auth_item.get("author", {})
-                        auth_name = author_data.get("display_name")
-                        auth_orcid = author_data.get("orcid")
-                        auth_openalex_id = author_data.get("id")
-                        
-                        if auth_name:
-                            # Đảm bảo orcid/openalex_id hợp lệ trước khi so khớp
-                            author_uuid = None
-                            with engine.begin() as conn:
-                                # Ưu tiên tìm theo OpenAlex ID
-                                if auth_openalex_id:
-                                    a_row = conn.execute(text("""
-                                        SELECT author_id FROM "Author" WHERE openalex_id = :oid
-                                    """), {"oid": auth_openalex_id}).fetchone()
-                                    if a_row:
-                                        author_uuid = a_row[0]
-                                        
-                                # Tìm theo ORCID nếu không tìm thấy theo OpenAlex ID
-                                if not author_uuid and auth_orcid:
-                                    a_row = conn.execute(text("""
-                                        SELECT author_id FROM "Author" WHERE orcid = :orcid
-                                    """), {"orcid": auth_orcid}).fetchone()
-                                    if a_row:
-                                        author_uuid = a_row[0]
-                                        
-                                # Tìm theo Tên nếu không có ID nào
-                                if not author_uuid:
-                                    a_row = conn.execute(text("""
-                                        SELECT author_id FROM "Author" WHERE display_name = :name AND openalex_id IS NULL AND orcid IS NULL
-                                    """), {"name": auth_name}).fetchone()
-                                    if a_row:
-                                        author_uuid = a_row[0]
-                                        
-                            if not author_uuid:
-                                # Tạo tác giả mới nếu chưa tồn tại
-                                with engine.begin() as conn:
-                                    author_uuid = conn.execute(text("""
-                                        INSERT INTO "Author" (display_name, orcid, openalex_id)
-                                        VALUES (:name, :orcid, :openalex_id)
-                                        RETURNING author_id
-                                    """), {
-                                        "name": auth_name,
-                                        "orcid": auth_orcid,
-                                        "openalex_id": auth_openalex_id
-                                    }).scalar()
-                                    
-                            # Liên kết Author và Article (luôn chạy, không để thụt lề bên trong if not author_uuid)
-                            if author_uuid and article_uuid:
-                                with engine.begin() as conn:
-                                    conn.execute(text("""
-                                        INSERT INTO "Author_Article" (author_id, article_id)
-                                        VALUES (:author_id, :article_id)
-                                        ON CONFLICT DO NOTHING
-                                    """), {
-                                        "author_id": author_uuid,
-                                        "article_id": article_uuid
-                                    })
-                                
-                        # 5. Xử lý Keywords
-                        keywords = work.get("keywords", [])
-                        for kw in keywords:
-                            kw_name = kw.get("display_name")
-                            kw_score = kw.get("score", 0.0)
-                            if kw_name:
-                                with engine.begin() as conn:
-                                    kw_row = conn.execute(text("""
-                                        SELECT keyword_id FROM "Keyword" WHERE display_name = :name
-                                    """), {"name": kw_name}).fetchone()
-                                    
-                                    if kw_row:
-                                        kw_uuid = kw_row[0]
-                                    else:
-                                        kw_uuid = conn.execute(text("""
-                                            INSERT INTO "Keyword" (display_name)
-                                            VALUES (:name)
-                                            RETURNING keyword_id
-                                        """), {"name": kw_name}).scalar()
-                                        
-                                    conn.execute(text("""
-                                        INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
-                                        VALUES (:keyword_id, :article_id, :score)
-                                        ON CONFLICT DO NOTHING
-                                    """), {
-                                        "keyword_id": kw_uuid,
-                                        "article_id": article_uuid,
-                                        "score": kw_score
-                                    })
-                                    
-                        # 6. Xử lý Sub_Topic (các chủ đề phụ/chủ đề khác ngoài primary_topic)
-                        topics = work.get("topics", [])
-                        for t_item in topics:
-                            t_name = t_item.get("display_name")
-                            t_score = t_item.get("score", 0.0)
-                            if not t_name:
-                                continue
-                                
-                            with engine.begin() as conn:
-                                sub_t_row = conn.execute(text("""
-                                    SELECT topic_id FROM "Topic" WHERE display_name = :name
-                                """), {"name": t_name}).fetchone()
-                                
-                                if sub_t_row:
-                                    sub_topic_uuid = sub_t_row[0]
-                                else:
-                                    sub_topic_uuid = conn.execute(text("""
-                                        INSERT INTO "Topic" (display_name, score)
-                                        VALUES (:name, :score)
-                                        RETURNING topic_id
-                                    """), {"name": t_name, "score": t_score}).scalar()
-                                    
-                                conn.execute(text("""
-                                    INSERT INTO "Sub_Topic" (article_id, topic_id)
-                                    VALUES (:article_id, :topic_id)
-                                    ON CONFLICT DO NOTHING
-                                """), {
-                                    "article_id": article_uuid,
-                                    "topic_id": sub_topic_uuid
-                                })
-
-                    synced_works_count += 1
+                with engine.begin() as conn:
+                    for work in works:
+                        _db_process_single_work(
+                            conn, work, journal_uuid,
+                            topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
+                            keyword_cache, volume_cache, issue_cache
+                        )
+                        synced_works_count += 1
                 
                 if not cursor_mode:
                     break

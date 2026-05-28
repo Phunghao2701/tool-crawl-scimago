@@ -18,3 +18,5 @@ data/*.xls
 .venv/
 venv/
 env/
+scratch/
+ERRORS_PREVENTION.md
