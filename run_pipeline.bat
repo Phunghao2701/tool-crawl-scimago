@@ -78,9 +78,11 @@ echo [INFO] Danh sach cac file trong thu muc data:
 dir /b data\*.csv data\*.xls data\*.xlsx 2>nul
 echo.
 echo [INFO] Ban co the keo tha truc tiep file tu Windows Explorer vao cua so nay.
+set filepath=
 set /p filepath="Nhap duong dan file (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
 set "filepath=%filepath:"=%"
+set year=
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
 if "%year%"=="" set year=2025
 
@@ -96,6 +98,7 @@ call :check_db
 echo ==========================================
 echo  3. SYNC OPENALEX JOURNALS
 echo ==========================================
+set j_limit=
 set /p j_limit="Nhap gioi han so tap chi can sync (nhan Enter de sync 50, nhap 0 de sync TOAN BO): "
 if "%j_limit%"=="" set j_limit=50
 
@@ -114,6 +117,7 @@ call :check_db
 echo ==========================================
 echo  4. SYNC OPENALEX WORKS
 echo ==========================================
+set w_limit=
 set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 20, nhap 0 de sync TOAN BO): "
 if "%w_limit%"=="" set w_limit=20
 
@@ -204,9 +208,11 @@ echo ==========================================
 echo  8. RUN FULL PIPELINE (IMPORT - SYNC - EXPORT)
 echo ==========================================
 echo [INFO] Ban co the keo tha truc tiep file tu Windows Explorer vao cua so nay.
+set filepath=
 set /p filepath="Nhap duong dan file (Mac dinh: data/scimagojr 2025.csv): "
 if "%filepath%"=="" set filepath=data/scimagojr 2025.csv
 set "filepath=%filepath:"=%"
+set year=
 set /p year="Nhap nam du lieu (Mac dinh: 2025): "
 if "%year%"=="" set year=2025
 

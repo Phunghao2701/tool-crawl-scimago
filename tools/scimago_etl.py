@@ -511,38 +511,81 @@ def normalize(engine, batch_id: str, year: int):
                 publisher_cache[pub_val] = upsert_publisher(conn, pub_val)
             pub_id = publisher_cache[pub_val]
 
-            # Journal upsert
-            j_row = conn.execute(text("""
-                INSERT INTO "Journal"
-                    (source_id, publisher_id, country, region,
-                     display_name, type, is_open_access, is_oa_diamond, issn, coverage)
-                VALUES
-                    (:src_id, :pub_id, :country_id, :region_id,
-                     :display_name, :type, :is_oa, :is_dia, :issn, :coverage)
-                ON CONFLICT (source_id) DO UPDATE SET
-                    publisher_id  = EXCLUDED.publisher_id,
-                    country       = EXCLUDED.country,
-                    region        = EXCLUDED.region,
-                    display_name  = EXCLUDED.display_name,
-                    type          = EXCLUDED.type,
-                    is_open_access = EXCLUDED.is_open_access,
-                    is_oa_diamond  = EXCLUDED.is_oa_diamond,
-                    issn          = EXCLUDED.issn,
-                    coverage      = EXCLUDED.coverage
-                RETURNING journal_id
-            """), {
-                "src_id":      src_id,
-                "pub_id":      pub_id,
-                "country_id":  country_id,
-                "region_id":   region_id,
-                "display_name": title,
-                "type":        (raw["type"] or "").strip() or None,
-                "is_oa":       norm_bool(raw["open_access"]),
-                "is_dia":      norm_bool(raw["open_access_diamond"]),
-                "issn":        (raw["issn"] or "").strip() or None,
-                "coverage":    (str(coverage_val) if coverage_val is not None else "").strip() or None,
-            }).fetchone()
-            jid = j_row[0]
+            # 1. Tìm tạp chí xem đã tồn tại chưa (khớp theo source_id hoặc issn)
+            existing_j = None
+            issn_val = (raw["issn"] or "").strip() or None
+            coverage_str = (str(coverage_val) if coverage_val is not None else "").strip() or None
+            
+            if src_id:
+                existing_j = conn.execute(text("""
+                    SELECT journal_id FROM "Journal" 
+                    WHERE source_id = :src_id 
+                       OR source_id = 'S_NOT_FOUND_' || :src_id 
+                       OR source_id = 'S_NO_ISSN_' || :src_id
+                       OR source_id = 'S_DUPLICATE_OPENALEX_' || :src_id
+                """), {"src_id": src_id}).fetchone()
+                
+            if not existing_j and issn_val:
+                issn_parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
+                for part in issn_parts:
+                    if len(part) >= 8:
+                        existing_j = conn.execute(text("""
+                            SELECT journal_id FROM "Journal" 
+                            WHERE issn LIKE :part OR :part_full LIKE '%' || issn || '%'
+                            LIMIT 1
+                        """), {"part": f"%{part}%", "part_full": issn_val}).fetchone()
+                        if existing_j:
+                            break
+
+            if existing_j:
+                jid = existing_j[0]
+                # Update journal (KHÔNG ghi đè source_id nếu nó đã được đổi thành OpenAlex ID)
+                conn.execute(text("""
+                    UPDATE "Journal"
+                    SET publisher_id  = :pub_id,
+                        country       = :country_id,
+                        region        = :region_id,
+                        display_name  = :display_name,
+                        type          = :type,
+                        is_open_access = :is_oa,
+                        is_oa_diamond  = :is_dia,
+                        issn          = :issn,
+                        coverage      = :coverage
+                    WHERE journal_id = :journal_id
+                """), {
+                    "journal_id":   jid,
+                    "pub_id":       pub_id,
+                    "country_id":   country_id,
+                    "region_id":    region_id,
+                    "display_name": title,
+                    "type":         (raw["type"] or "").strip() or None,
+                    "is_oa":        norm_bool(raw["open_access"]),
+                    "is_dia":       norm_bool(raw["open_access_diamond"]),
+                    "issn":         issn_val,
+                    "coverage":     coverage_str
+                })
+            else:
+                # Insert journal mới
+                jid = conn.execute(text("""
+                    INSERT INTO "Journal"
+                        (source_id, publisher_id, country, region,
+                         display_name, type, is_open_access, is_oa_diamond, issn, coverage)
+                    VALUES
+                        (:src_id, :pub_id, :country_id, :region_id,
+                         :display_name, :type, :is_oa, :is_dia, :issn, :coverage)
+                    RETURNING journal_id
+                """), {
+                    "src_id":       src_id,
+                    "pub_id":       pub_id,
+                    "country_id":   country_id,
+                    "region_id":    region_id,
+                    "display_name": title,
+                    "type":         (raw["type"] or "").strip() or None,
+                    "is_oa":        norm_bool(raw["open_access"]),
+                    "is_dia":       norm_bool(raw["open_access_diamond"]),
+                    "issn":         issn_val,
+                    "coverage":     coverage_str
+                }).scalar()
 
             # Subject categories
             categories = parse_categories(raw["categories"])

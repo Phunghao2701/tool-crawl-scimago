@@ -197,7 +197,7 @@ def sync_journals(limit: int):
             FROM raw_scimago_journal
             ORDER BY source_id, created_at DESC
         ) r ON j.source_id = r.source_id
-        WHERE j.openalex_synced_at IS NULL
+        WHERE j.source_id NOT LIKE 'https://openalex.org/%' AND j.source_id NOT LIKE 'S%'
         ORDER BY 
             CASE WHEN r.rank_txt IS NULL OR r.rank_txt = '' THEN 999999 
                  ELSE CAST(r.rank_txt AS integer) 
@@ -234,10 +234,10 @@ def sync_journals(limit: int):
             with engine.begin() as conn:
                 conn.execute(text("""
                     UPDATE "Journal"
-                    SET openalex_synced_at = :synced_at
+                    SET source_id = :failed_source_id
                     WHERE journal_id = :journal_id
                 """), {
-                    "synced_at": datetime.now(timezone.utc),
+                    "failed_source_id": f"S_NO_ISSN_{source_id}" if source_id else "S_NO_ISSN",
                     "journal_id": journal_id
                 })
             continue
@@ -256,9 +256,9 @@ def sync_journals(limit: int):
         
     print(f"[sync] Prepared {len(all_issns)} unique ISSNs to query in chunks of 50...")
     
-    # Lấy tất cả openalex_id đã tồn tại trong DB để tránh UniqueViolation
+    # Lấy tất cả OpenAlex ID (được lưu trong source_id) đã tồn tại trong DB để tránh UniqueViolation
     with engine.connect() as conn:
-        existing_rows = conn.execute(text('SELECT openalex_id FROM "Journal" WHERE openalex_id IS NOT NULL')).fetchall()
+        existing_rows = conn.execute(text("SELECT source_id FROM \"Journal\" WHERE source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%'")).fetchall()
     existing_openalex_ids = {row[0] for row in existing_rows}
     synced_openalex_ids_this_run = set()
     
@@ -336,13 +336,14 @@ def sync_journals(limit: int):
                 # Tránh UniqueViolation nếu openalex_id đã được gán cho journal khác
                 if openalex_id in existing_openalex_ids or openalex_id in synced_openalex_ids_this_run:
                     print(f"  -> WARNING: OpenAlex ID {openalex_id} already mapped in DB. Marking '{display_name}' as synced without setting openalex_id to prevent UniqueViolation.")
+                    source_id = journal_info[j_id][1]
                     with engine.begin() as conn:
                         conn.execute(text("""
                             UPDATE "Journal"
-                            SET openalex_synced_at = :synced_at
+                            SET source_id = :failed_source_id
                             WHERE journal_id = :journal_id
                         """), {
-                            "synced_at": datetime.now(timezone.utc),
+                            "failed_source_id": f"S_DUPLICATE_OPENALEX_{source_id}" if source_id else "S_DUPLICATE_OPENALEX",
                             "journal_id": j_id
                         })
                     synced_journal_ids.add(j_id)
@@ -370,20 +371,12 @@ def sync_journals(limit: int):
                 with engine.begin() as conn:
                     conn.execute(text("""
                         UPDATE "Journal"
-                        SET openalex_id = :openalex_id,
-                            homepage_url = :homepage_url,
-                            works_count = :works_count,
-                            cited_by_count = :cited_by_count,
-                            publisher_id = COALESCE(:publisher_uuid, publisher_id),
-                            openalex_synced_at = :synced_at
+                        SET source_id = :openalex_id,
+                            publisher_id = COALESCE(:publisher_uuid, publisher_id)
                         WHERE journal_id = :journal_id
                     """), {
                         "openalex_id": openalex_id,
-                        "homepage_url": homepage_url,
-                        "works_count": works_count,
-                        "cited_by_count": cited_by_count,
                         "publisher_uuid": publisher_uuid,
-                        "synced_at": datetime.now(timezone.utc),
                         "journal_id": j_id
                     })
                 
@@ -400,13 +393,14 @@ def sync_journals(limit: int):
                 if j_id not in synced_journal_ids and j_id not in chunk_synced_ids:
                     # Đánh dấu đã quét (thất bại) để tránh lặp lần sau
                     display_name = journal_info[j_id][0]
+                    source_id = journal_info[j_id][1]
                     with engine.begin() as conn:
                         conn.execute(text("""
                             UPDATE "Journal"
-                            SET openalex_synced_at = :synced_at
+                            SET source_id = :failed_source_id
                             WHERE journal_id = :journal_id
                         """), {
-                            "synced_at": datetime.now(timezone.utc),
+                            "failed_source_id": f"S_NOT_FOUND_{source_id}" if source_id else "S_NOT_FOUND",
                             "journal_id": j_id
                         })
                     print(f"  -> NOT FOUND: '{display_name}' (ISSN {issn}) not found on OpenAlex.")
@@ -420,8 +414,8 @@ def cmd_stats(args):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         total = conn.execute(text('SELECT COUNT(*) FROM "Journal"')).scalar()
-        synced = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE openalex_id IS NOT NULL')).scalar()
-        unsynced = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE openalex_synced_at IS NULL')).scalar()
+        synced = conn.execute(text("SELECT COUNT(*) FROM \"Journal\" WHERE source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%'")).scalar()
+        unsynced = total - synced
         
         print("\n[OpenAlex Sync Stats]")
         print(f"  Total journals in DB:    {total:,}")
@@ -432,21 +426,20 @@ def cmd_stats(args):
         if synced > 0:
             print("\n[Latest Synced Journals Sample]")
             rows = conn.execute(text("""
-                SELECT display_name, openalex_id, works_count, cited_by_count, homepage_url
+                SELECT display_name, source_id, works_synced_at
                 FROM "Journal"
-                WHERE openalex_id IS NOT NULL
-                ORDER BY openalex_synced_at DESC
+                WHERE source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%'
+                ORDER BY works_synced_at DESC NULLS LAST
                 LIMIT 10
             """)).fetchall()
             
-            print(f"  {'Journal Name':<50} {'Works':>8} {'Citations':>10} {'OpenAlex ID':<25}")
-            print("  " + "-" * 98)
+            print(f"  {'Journal Name':<50} {'Works Synced At':<25} {'OpenAlex ID':<25}")
+            print("  " + "-" * 104)
             for r in rows:
                 name = r[0][:47] + "..." if len(r[0]) > 50 else r[0]
-                works = f"{r[2]:,}" if r[2] is not None else "N/A"
-                cites = f"{r[3]:,}" if r[3] is not None else "N/A"
+                synced_at = str(r[2]) if r[2] is not None else "Not yet"
                 oid = r[1].replace("https://openalex.org/", "") if r[1] else "N/A"
-                print(f"  {name:<50} {works:>8} {cites:>10} {oid:<25}")
+                print(f"  {name:<50} {synced_at:<25} {oid:<25}")
 
 
 def cmd_export(args):
@@ -454,63 +447,94 @@ def cmd_export(args):
     import json
     engine = create_engine(DATABASE_URL)
     
-    print("[export] Fetching enriched data from PostgreSQL...")
-    query = """
-        SELECT 
-            j.source_id,
-            j.issn AS normalized_issn,
-            j.openalex_id,
-            j.homepage_url AS openalex_homepage,
-            j.works_count AS openalex_works_count,
-            j.cited_by_count AS openalex_cited_by_count,
-            j.scope_detail,
-            r.raw_json
-        FROM "Journal" j
-        LEFT JOIN (
-            SELECT DISTINCT ON (source_id) source_id, raw_json
-            FROM raw_scimago_journal
-            ORDER BY source_id, created_at DESC
-        ) r ON r.source_id = j.source_id
-    """
-
+    print("[export] Fetching journals and raw scimago data from PostgreSQL...")
     
     try:
+        # 1. Tải toàn bộ Journal
         with engine.connect() as conn:
-            rows = conn.execute(text(query)).fetchall()
+            journals = conn.execute(text("""
+                SELECT journal_id, source_id, issn, scope_detail, display_name, works_synced_at
+                FROM "Journal"
+            """)).fetchall()
             
+        # 2. Tải toàn bộ raw_scimago_journal (chỉ lấy bản ghi mới nhất cho mỗi source_id)
+        with engine.connect() as conn:
+            raw_rows = conn.execute(text("""
+                SELECT DISTINCT ON (source_id) source_id, issn, raw_json
+                FROM raw_scimago_journal
+                ORDER BY source_id, created_at DESC
+            """)).fetchall()
+            
+        print(f"[export] Loaded {len(journals)} journals and {len(raw_rows)} raw scimago records.")
+        
+        # 3. Xây dựng mapping ISSN -> raw_row và source_id thô -> raw_row
+        raw_by_issn = {}
+        raw_by_source_id = {}
+        
+        for row in raw_rows:
+            raw_by_source_id[row.source_id] = row
+            issn_str = row.issn or ""
+            # Trích xuất và chuẩn hóa ISSNs
+            parts = [x.strip() for x in issn_str.replace(",", " ").split() if x.strip()]
+            for part in parts:
+                if len(part) >= 8:
+                    raw_by_issn[part] = row
+                    
+        # 4. So khớp từng Journal với raw scimago record
         records = []
-        for row in rows:
+        matched_count = 0
+        
+        for j in journals:
+            raw_match = None
+            
+            # Thử tìm theo source_id thô trước (nếu chưa sync)
+            if j.source_id in raw_by_source_id:
+                raw_match = raw_by_source_id[j.source_id]
+                
+            # Thử tìm theo ISSN (quan trọng nhất cho các dòng đã sync)
+            if not raw_match and j.issn:
+                j_parts = [x.strip() for x in j.issn.replace(",", " ").split() if x.strip()]
+                for part in j_parts:
+                    if len(part) >= 8 and part in raw_by_issn:
+                        raw_match = raw_by_issn[part]
+                        break
+                        
             raw_dict = {}
-            if row.raw_json:
-                if isinstance(row.raw_json, str):
-                    raw_dict = json.loads(row.raw_json)
-                elif isinstance(row.raw_json, dict):
-                    raw_dict = row.raw_json
-            
-            # Fallback if raw_json is missing
+            if raw_match and raw_match.raw_json:
+                matched_count += 1
+                if isinstance(raw_match.raw_json, str):
+                    raw_dict = json.loads(raw_match.raw_json)
+                elif isinstance(raw_match.raw_json, dict):
+                    raw_dict = raw_match.raw_json
+                    
             if not raw_dict:
+                # Fallback nếu không khớp được bản ghi thô
                 raw_dict = {
-                    "Sourceid": row.source_id,
-                    "Issn": row.normalized_issn,
+                    "Sourceid": j.source_id,
+                    "Title": j.display_name,
+                    "Issn": j.issn,
                 }
-            
-            # Override Issn with normalized ISSN from database (cleaner and verified)
-            if row.normalized_issn:
+                
+            # Override ISSN bằng ISSN sạch từ DB
+            if j.issn:
                 issn_key = "Issn"
                 for k in raw_dict.keys():
                     if k.lower() == "issn":
                         issn_key = k
                         break
-                raw_dict[issn_key] = row.normalized_issn
+                raw_dict[issn_key] = j.issn
                 
-            # Dynamically attach OpenAlex fields
-            raw_dict["OpenAlex ID"] = row.openalex_id
-            raw_dict["OpenAlex Homepage"] = row.openalex_homepage
-            raw_dict["OpenAlex Works Count"] = row.openalex_works_count
-            raw_dict["OpenAlex Cited By Count"] = row.openalex_cited_by_count
-            raw_dict["Scope Detail"] = row.scope_detail
+            # Gắn thêm các cột OpenAlex làm giàu thông tin
+            oa_id = j.source_id if (j.source_id and ('openalex.org' in j.source_id or j.source_id.startswith('S'))) else None
+            raw_dict["OpenAlex ID"] = oa_id
+            raw_dict["OpenAlex Homepage"] = None
+            raw_dict["OpenAlex Works Count"] = None
+            raw_dict["OpenAlex Cited By Count"] = None
+            raw_dict["Scope Detail"] = j.scope_detail
             
             records.append(raw_dict)
+            
+        print(f"[export] Successfully matched {matched_count}/{len(journals)} journals with their raw Scimago data.")
             
         if not records:
             print("[export] No data found in database to export.")
@@ -1304,9 +1328,9 @@ def sync_works(limit: int):
     
     # 1. Lấy danh sách các Journal đã được đồng bộ từ OpenAlex nhưng chưa đồng bộ bài viết
     query_journals = """
-        SELECT journal_id, openalex_id, display_name
+        SELECT journal_id, source_id, display_name
         FROM "Journal"
-        WHERE openalex_id IS NOT NULL AND works_synced_at IS NULL
+        WHERE (source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%') AND works_synced_at IS NULL
         ORDER BY journal_id ASC
     """
     with engine.connect() as conn:
