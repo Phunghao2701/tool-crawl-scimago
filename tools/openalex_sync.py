@@ -1130,7 +1130,7 @@ def _db_process_single_work(
     # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
     article_uuid = None
     art_row = conn.execute(text("""
-        SELECT article_id FROM "Article" WHERE title = :title AND issue_id = :issue_id
+        SELECT article_id FROM "Article" WHERE title = :title AND issue_id = :issue_id AND is_deleted = false
     """), {
         "title": work_title,
         "issue_id": issue_uuid
@@ -1330,7 +1330,7 @@ def sync_works(limit: int):
     query_journals = """
         SELECT journal_id, source_id, display_name
         FROM "Journal"
-        WHERE (source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%') AND works_synced_at IS NULL
+        WHERE source_id LIKE 'https://openalex.org/%' AND works_synced_at IS NULL
         ORDER BY journal_id ASC
     """
     with engine.connect() as conn:
@@ -1467,7 +1467,7 @@ def sync_works(limit: int):
 def cmd_stats_works():
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
-        articles = conn.execute(text('SELECT COUNT(*) FROM "Article"')).scalar()
+        articles = conn.execute(text('SELECT COUNT(*) FROM "Article" WHERE is_deleted = false')).scalar()
         topics = conn.execute(text('SELECT COUNT(*) FROM "Topic"')).scalar()
         keywords = conn.execute(text('SELECT COUNT(*) FROM "Keyword"')).scalar()
         publishers = conn.execute(text('SELECT COUNT(*) FROM "Publisher"')).scalar()
@@ -1504,6 +1504,7 @@ def cmd_export_works(args):
         LEFT JOIN "Author" au ON aa.author_id = au.author_id
         LEFT JOIN "Keyword_Article" ka ON a.article_id = ka.article_id
         LEFT JOIN "Keyword" kw ON ka.keyword_id = kw.keyword_id
+        WHERE a.is_deleted = false
         GROUP BY a.article_id, t.display_name
         ORDER BY a.publication_year DESC, a.title ASC
     """
