@@ -15,21 +15,29 @@ color 0B
 
 :menu
 cls
+
+rem Hien thi DB dang active
+for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB=%%A
 echo ====================================================================
 echo             SCIMAGO AND OPENALEX ETL PIPELINE CONTROL PANEL
 echo ====================================================================
-echo 1. Setup Environment - DB: Cai dat dependencies, Docker, Schema, Seed
-echo 2. Import Scimago Data: Import file Scimago tho tu thu muc data
-echo 3. Sync OpenAlex Journals: Dong bo thong tin tap chi tu OpenAlex API
-echo 4. Sync OpenAlex Works: Dong bo bai bao (Works, Topics, Keywords)
-echo 5. Sync OpenAlex Authors: Dong bo chi tiet tac gia (Da luong sieu nhanh)
-echo 6. Export Report: Xuat bao cao Excel va CSV
-echo 7. View Database Statistics: Xem so lieu thong ke trong database
-echo 8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
-echo 9. Exit: Thoat
+echo  DB dang dung: %CURRENT_DB%
 echo ====================================================================
-set /p choice="Vui long chon chuc nang (1-9): "
+echo  0. Switch DB: Chuyen giua Local Docker va Vercel
+echo  1. Setup Environment - DB: Cai dat dependencies, Docker, Schema, Seed
+echo  2. Import Scimago Data: Import file Scimago tho tu thu muc data
+echo  3. Sync OpenAlex Journals: Dong bo thong tin tap chi tu OpenAlex API
+echo  4. Sync OpenAlex Works: Dong bo bai bao (Works, Topics, Keywords)
+echo  5. Sync OpenAlex Authors: Dong bo chi tiet tac gia (Da luong sieu nhanh)
+echo  6. Export Report: Xuat bao cao Excel va CSV
+echo  7. View Database Statistics: Xem so lieu thong ke trong database
+echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
+echo  M. Migrate Local -^> Vercel: Chuyen toan bo data tu Local len Vercel
+echo  9. Exit: Thoat
+echo ====================================================================
+set /p choice="Vui long chon chuc nang (0-9, M): "
 
+if "%choice%"=="0" goto switch_db
 if "%choice%"=="1" goto setup
 if "%choice%"=="2" goto import
 if "%choice%"=="3" goto sync_journals
@@ -38,6 +46,7 @@ if "%choice%"=="5" goto sync_authors_cmd
 if "%choice%"=="6" goto export
 if "%choice%"=="7" goto stats
 if "%choice%"=="8" goto full
+if /i "%choice%"=="M" goto migrate_to_vercel
 if "%choice%"=="9" goto exit
 goto menu
 
@@ -248,23 +257,74 @@ echo.
 pause
 goto menu
 
+:switch_db
+cls
+echo ==========================================
+echo  0. SWITCH DATABASE
+echo ==========================================
+echo.
+for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB_VAL=%%A
+echo DB hien tai: %CURRENT_DB_VAL%
+echo.
+echo  1. Dung LOCAL Docker (postgresql://localhost:5433)
+echo  2. Dung VERCEL Prisma (db.prisma.io)
+echo  3. Giu nguyen, quay lai menu
+echo.
+set /p db_choice="Chon (1/2/3): "
+
+if "%db_choice%"=="1" (
+    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
+    echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
+    echo OPENALEX_API_KEY=QMpnNu39KD8pRteBiQzGqe>> .env
+    echo.
+    echo [OK] Da chuyen sang LOCAL Docker DB!
+    pause
+    goto menu
+)
+if "%db_choice%"=="2" (
+    echo DATABASE_URL=postgresql+psycopg2://69f8401866983bec6a1d9f8633138409dada50ffad23ca628de6337632aec611:sk_319LYXnAvsyeOyLSFkint@db.prisma.io:5432/postgres?sslmode=require> .env
+    echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
+    echo OPENALEX_API_KEY=QMpnNu39KD8pRteBiQzGqe>> .env
+    echo.
+    echo [OK] Da chuyen sang VERCEL DB!
+    pause
+    goto menu
+)
+goto menu
+
+:migrate_to_vercel
+cls
+echo ==========================================
+echo  M. MIGRATE LOCAL -> VERCEL
+echo ==========================================
+echo.
+echo Script nay se sao chep TOAN BO du lieu tu Local DB sang Vercel DB.
+echo Du lieu cu tren Vercel se bi XOA SACH truoc khi copy.
+echo.
+echo Luu y: .env hien tai van dung LOCAL DB sau khi migrate xong.
+echo.
+python tools/migrate_local_to_vercel.py
+echo.
+pause
+goto menu
+
 :exit
 echo Tam biet!
 exit /b 0
 
 :check_db
-python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; load_dotenv(); engine=create_engine(os.getenv('DATABASE_URL')); conn=engine.connect(); conn.close()" 2>nul
+python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; import pathlib; load_dotenv(pathlib.Path('.env'), override=True); url=os.getenv('DATABASE_URL',''); engine=create_engine(url); conn=engine.connect(); conn.close()" 2>nul
 if errorlevel 1 (
     cls
     echo ====================================================================
     echo [LOI] KHONG THE KET NOI DEN DATABASE POSTGRESQL!
     echo ====================================================================
-    echo Vui long kiem tra cac buoc sau:
-    echo  1. Ban da mo Docker Desktop hoac dich vu Docker len chua?
-    echo  2. Ban da chay lua chon "1. Setup Environment - DB" de tao container chua?
-    echo  3. Neu file .env cua ban bi thay doi, hay dam bao port la 5433 va password la 1234.
+    echo DB hien tai trong .env:
+    findstr /i "DATABASE_URL" .env
     echo.
-    echo Vui long mo Docker Desktop va chay Option 1 truoc de thiet lap tu dong.
+    echo Neu dung LOCAL: Kiem tra Docker Desktop da chay chua? Chay Option 1.
+    echo Neu dung VERCEL: Kiem tra ket noi Internet va URL trong .env.
+    echo Co the dung Option 0 de doi sang DB khac.
     echo ====================================================================
     pause
     goto menu
