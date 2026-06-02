@@ -390,6 +390,83 @@ def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
     return ranking_id
 
 
+def bulk_insert_raw_sql(conn, table_name, columns, rows, on_conflict_clause=""):
+    """
+    Thực hiện chèn bulk insert bằng cách sinh câu lệnh SQL thô có dạng:
+    INSERT INTO table (col1, col2) VALUES (val1, val2), (val3, val4) ...
+    """
+    if not rows:
+        return
+    
+    cols_str = ", ".join([f'"{c}"' for c in columns])
+    
+    values_runs = []
+    params = {}
+    for i, row in enumerate(rows):
+        val_placeholders = []
+        for col in columns:
+            param_name = f"{col}_{i}"
+            val_placeholders.append(f":{param_name}")
+            params[param_name] = row.get(col)
+        values_runs.append(f"({', '.join(val_placeholders)})")
+        
+    sql = f"""
+        INSERT INTO "{table_name}" ({cols_str})
+        VALUES {', '.join(values_runs)}
+        {on_conflict_clause}
+    """
+    conn.execute(text(sql), params)
+
+
+def bulk_update_journals_sql(conn, rows):
+    """
+    Thực hiện bulk update cho bảng Journal bằng cách sử dụng UPDATE ... FROM (VALUES ...)
+    """
+    if not rows:
+        return
+    
+    cols = ["journal_id", "publisher_id", "country", "region", "display_name", "type", "is_open_access", "is_oa_diamond", "issn", "coverage"]
+    
+    values_runs = []
+    params = {}
+    for i, row in enumerate(rows):
+        val_placeholders = []
+        for col in cols:
+            param_name = f"{col}_{i}"
+            if i == 0:
+                if col == "journal_id":
+                    val_placeholders.append(f"CAST(:{param_name} AS BIGINT)")
+                elif col in ["publisher_id", "country", "region"]:
+                    val_placeholders.append(f"CAST(:{param_name} AS BIGINT)")
+                elif col in ["is_open_access", "is_oa_diamond"]:
+                    val_placeholders.append(f"CAST(:{param_name} AS BOOLEAN)")
+                else:
+                    val_placeholders.append(f"CAST(:{param_name} AS TEXT)")
+            else:
+                val_placeholders.append(f":{param_name}")
+            params[param_name] = row.get(col)
+        values_runs.append(f"({', '.join(val_placeholders)})")
+        
+    sql = f"""
+        UPDATE "Journal" AS j
+        SET publisher_id   = tmp.publisher_id,
+            country        = tmp.country,
+            region         = tmp.region,
+            display_name   = tmp.display_name,
+            type           = tmp.type,
+            is_open_access = tmp.is_open_access,
+            is_oa_diamond  = tmp.is_oa_diamond,
+            issn           = tmp.issn,
+            coverage       = tmp.coverage,
+            is_deleted     = false
+        FROM (
+            VALUES {', '.join(values_runs)}
+        ) AS tmp(journal_id, publisher_id, country, region, display_name, type, is_open_access, is_oa_diamond, issn, coverage)
+        WHERE j.journal_id = tmp.journal_id
+    """
+    conn.execute(text(sql), params)
+
+
 # ---------------------------------------------------------------
 # Stage insert
 # ---------------------------------------------------------------
@@ -423,7 +500,9 @@ def insert_raw(engine, df: pd.DataFrame, batch_id: str):
         rows.append(item)
 
     with engine.begin() as conn:
-        for item in rows:
+        batch_size = 2000
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i+batch_size]
             conn.execute(text("""
                 INSERT INTO raw_scimago_journal (
                     import_batch_id, rank_txt, source_id, title, type, issn,
@@ -439,7 +518,7 @@ def insert_raw(engine, df: pd.DataFrame, batch_id: str):
                     :ref_doc, :country, :region, :categories, :areas,
                     CAST(:raw_json AS JSONB)
                 )
-            """), item)
+            """), batch)
     print(f"[stage] inserted {len(rows)} rows -> raw_scimago_journal")
 
 
@@ -473,24 +552,51 @@ def normalize(engine, batch_id: str, year: int):
         print(f"[normalize] Start processing {total_rows} journals to main database tables...")
 
         # In-memory caches to reduce database SELECT/INSERT operations dramatically
+        print("[normalize] Pre-loading master categories from database...")
         zone_cache = {}
+        for row in conn.execute(text('SELECT zone_id, name, type FROM "Zone"')).fetchall():
+            zone_cache[(row[1], str(row[2]).lower() if row[2] else "")] = row[0]
+            
         publisher_cache = {}
+        for row in conn.execute(text('SELECT publisher_id, display_name FROM "Publisher"')).fetchall():
+            publisher_cache[row[1]] = row[0]
+            
         subject_area_cache = {}
+        for row in conn.execute(text('SELECT subject_area_id, display_name FROM "Subject_Area"')).fetchall():
+            subject_area_cache[row[1]] = row[0]
+            
         subject_category_cache = {}
+        for row in conn.execute(text('SELECT subject_category_id, subject_area_id, display_name FROM "Subject_Category"')).fetchall():
+            subject_category_cache[(row[1], row[2])] = row[0]
 
-        ok = skipped = 0
+        # Pre-load all existing Journals into memory
+        print("[normalize] Pre-loading existing journals from database...")
+        existing_journals = conn.execute(text('SELECT journal_id, source_id, issn FROM "Journal"')).fetchall()
+        src_to_jid = {}
+        issn_to_jid = {}
+        for row in existing_journals:
+            jid, src_id, issn_val = row[0], row[1], row[2]
+            if src_id:
+                src_to_jid[src_id] = jid
+                src_to_jid[f"S_NOT_FOUND_{src_id}"] = jid
+                src_to_jid[f"S_NO_ISSN_{src_id}"] = jid
+                src_to_jid[f"S_DUPLICATE_OPENALEX_{src_id}"] = jid
+            if issn_val:
+                parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
+                for part in parts:
+                    if len(part) >= 8:
+                        issn_to_jid[part] = jid
+
+        journals_to_insert = []
+        journals_to_update = []
+
+        print("[normalize] Pass 1: Resolving references and preparing journal data...")
+        # PASS 1: Chuẩn bị dữ liệu Journal để bulk insert/update
         for raw in raw_rows:
             src_id = (raw["source_id"] or "").strip()
             title  = (raw["title"] or "").strip()
             if not src_id or not title:
-                skipped += 1
                 continue
-
-            # Load raw data from json to fetch non-staging columns like Coverage
-            raw_data = raw["raw_json"] if raw["raw_json"] else {}
-            if isinstance(raw_data, str):
-                raw_data = json.loads(raw_data)
-            coverage_val = raw_data.get("Coverage", None)
 
             # Zone upserts with cache
             country_val = raw["country"]
@@ -511,88 +617,114 @@ def normalize(engine, batch_id: str, year: int):
                 publisher_cache[pub_val] = upsert_publisher(conn, pub_val)
             pub_id = publisher_cache[pub_val]
 
-            # 1. Tìm tạp chí xem đã tồn tại chưa (khớp theo source_id hoặc issn)
-            existing_j = None
-            issn_val = (raw["issn"] or "").strip() or None
-            coverage_str = (str(coverage_val) if coverage_val is not None else "").strip() or None
-            
-            if src_id:
-                existing_j = conn.execute(text("""
-                    SELECT journal_id FROM "Journal" 
-                    WHERE source_id = :src_id 
-                       OR source_id = 'S_NOT_FOUND_' || :src_id 
-                       OR source_id = 'S_NO_ISSN_' || :src_id
-                       OR source_id = 'S_DUPLICATE_OPENALEX_' || :src_id
-                """), {"src_id": src_id}).fetchone()
-                
-            if not existing_j and issn_val:
-                issn_parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
-                for part in issn_parts:
-                    if len(part) >= 8:
-                        existing_j = conn.execute(text("""
-                            SELECT journal_id FROM "Journal" 
-                            WHERE issn LIKE :part OR :part_full LIKE '%' || issn || '%'
-                            LIMIT 1
-                        """), {"part": f"%{part}%", "part_full": issn_val}).fetchone()
-                        if existing_j:
+            # Tra cứu journal_id từ cache bộ nhớ
+            existing_jid = None
+            if src_id in src_to_jid:
+                existing_jid = src_to_jid[src_id]
+            else:
+                issn_val = (raw["issn"] or "").strip() or None
+                if issn_val:
+                    issn_parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
+                    for part in issn_parts:
+                        if len(part) >= 8 and part in issn_to_jid:
+                            existing_jid = issn_to_jid[part]
                             break
 
-            if existing_j:
-                jid = existing_j[0]
-                # Update journal (KHÔNG ghi đè source_id nếu nó đã được đổi thành OpenAlex ID)
-                conn.execute(text("""
-                    UPDATE "Journal"
-                    SET publisher_id  = :pub_id,
-                        country       = :country_id,
-                        region        = :region_id,
-                        display_name  = :display_name,
-                        type          = :type,
-                        is_open_access = :is_oa,
-                        is_oa_diamond  = :is_dia,
-                        issn          = :issn,
-                        coverage      = :coverage,
-                        is_deleted    = false
-                    WHERE journal_id = :journal_id
-                """), {
-                    "journal_id":   jid,
-                    "pub_id":       pub_id,
-                    "country_id":   country_id,
-                    "region_id":    region_id,
-                    "display_name": title,
-                    "type":         (raw["type"] or "").strip() or None,
-                    "is_oa":        norm_bool(raw["open_access"]),
-                    "is_dia":       norm_bool(raw["open_access_diamond"]),
-                    "issn":         issn_val,
-                    "coverage":     coverage_str
-                })
+            raw_data = raw["raw_json"] if raw["raw_json"] else {}
+            if isinstance(raw_data, str):
+                raw_data = json.loads(raw_data)
+            coverage_val = raw_data.get("Coverage", None)
+            coverage_str = (str(coverage_val) if coverage_val is not None else "").strip() or None
+            issn_val = (raw["issn"] or "").strip() or None
+
+            journal_item = {
+                "source_id":       src_id,
+                "publisher_id":    pub_id,
+                "country":         country_id,
+                "region":          region_id,
+                "display_name":    title,
+                "type":            (raw["type"] or "").strip() or None,
+                "is_open_access":  norm_bool(raw["open_access"]),
+                "is_oa_diamond":   norm_bool(raw["open_access_diamond"]),
+                "issn":            issn_val,
+                "coverage":        coverage_str
+            }
+
+            if existing_jid:
+                journal_item["journal_id"] = existing_jid
+                journals_to_update.append(journal_item)
             else:
-                # Insert journal mới
-                jid = conn.execute(text("""
-                    INSERT INTO "Journal"
-                        (source_id, publisher_id, country, region,
-                         display_name, type, is_open_access, is_oa_diamond, issn, coverage)
-                    VALUES
-                        (:src_id, :pub_id, :country_id, :region_id,
-                         :display_name, :type, :is_oa, :is_dia, :issn, :coverage)
-                    RETURNING journal_id
-                """), {
-                    "src_id":       src_id,
-                    "pub_id":       pub_id,
-                    "country_id":   country_id,
-                    "region_id":    region_id,
-                    "display_name": title,
-                    "type":         (raw["type"] or "").strip() or None,
-                    "is_oa":        norm_bool(raw["open_access"]),
-                    "is_dia":       norm_bool(raw["open_access_diamond"]),
-                    "issn":         issn_val,
-                    "coverage":     coverage_str
-                }).scalar()
+                journals_to_insert.append(journal_item)
+
+        # Thực thi Bulk Insert cho Journal mới
+        if journals_to_insert:
+            print(f"[normalize] Inserting {len(journals_to_insert)} new journals...")
+            journal_cols = ["source_id", "publisher_id", "country", "region", "display_name", "type", "is_open_access", "is_oa_diamond", "issn", "coverage"]
+            batch_size = 2000
+            for i in range(0, len(journals_to_insert), batch_size):
+                batch = journals_to_insert[i:i+batch_size]
+                bulk_insert_raw_sql(conn, "Journal", journal_cols, batch)
+
+        # Thực thi Bulk Update cho Journal cũ
+        if journals_to_update:
+            print(f"[normalize] Updating {len(journals_to_update)} existing journals...")
+            batch_size = 1000
+            for i in range(0, len(journals_to_update), batch_size):
+                batch = journals_to_update[i:i+batch_size]
+                bulk_update_journals_sql(conn, batch)
+
+        # Sau khi hoàn tất Pass 1, load lại toàn bộ danh sách Journal để có journal_id đầy đủ trong cache bộ nhớ
+        print("[normalize] Reloading journal cache for Pass 2...")
+        existing_journals = conn.execute(text('SELECT journal_id, source_id, issn FROM "Journal"')).fetchall()
+        src_to_jid = {}
+        issn_to_jid = {}
+        for row in existing_journals:
+            jid, src_id, issn_val = row[0], row[1], row[2]
+            if src_id:
+                src_to_jid[src_id] = jid
+                src_to_jid[f"S_NOT_FOUND_{src_id}"] = jid
+                src_to_jid[f"S_NO_ISSN_{src_id}"] = jid
+                src_to_jid[f"S_DUPLICATE_OPENALEX_{src_id}"] = jid
+            if issn_val:
+                parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
+                for part in parts:
+                    if len(part) >= 8:
+                        issn_to_jid[part] = jid
+
+        # PASS 2: Thu thập thông tin link Subject Category và Rankings
+        print("[normalize] Pass 2: Building subject categories and ranking metrics...")
+        subject_links_to_insert = []
+        rankings_to_insert = []
+
+        ok = skipped = 0
+        for raw in raw_rows:
+            src_id = (raw["source_id"] or "").strip()
+            title  = (raw["title"] or "").strip()
+            if not src_id or not title:
+                skipped += 1
+                continue
+
+            # Lấy jid từ cache bộ nhớ
+            jid = None
+            if src_id in src_to_jid:
+                jid = src_to_jid[src_id]
+            else:
+                issn_val = (raw["issn"] or "").strip() or None
+                if issn_val:
+                    issn_parts = [x.strip() for x in issn_val.replace(",", " ").split() if x.strip()]
+                    for part in issn_parts:
+                        if len(part) >= 8 and part in issn_to_jid:
+                            jid = issn_to_jid[part]
+                            break
+            
+            if not jid:
+                skipped += 1
+                continue
 
             # Subject categories
             categories = parse_categories(raw["categories"])
             quartiles_all = []
             for cat in categories:
-                # Area: use "areas" field if available, else derive from category name
                 area_name = (raw.get("areas") or "").strip() or "General"
                 if area_name not in subject_area_cache:
                     subject_area_cache[area_name] = upsert_subject_area(conn, area_name)
@@ -604,53 +736,106 @@ def normalize(engine, batch_id: str, year: int):
                     subject_category_cache[cat_key] = upsert_subject_category(conn, area_id, cat_name)
                 cat_id = subject_category_cache[cat_key]
 
-                # journal ↔ category link
-                conn.execute(text("""
-                    INSERT INTO "Journal_Subject_Category" (journal_id, subject_category_id)
-                    VALUES (:jid, :cid)
-                    ON CONFLICT DO NOTHING
-                """), {"jid": jid, "cid": cat_id})
+                # Link category
+                subject_links_to_insert.append({"journal_id": jid, "subject_category_id": cat_id})
 
                 # quartile per category
                 if cat["quartile"]:
-                    insert_ranking(conn, jid, cat_id,
-                                   metrics["SJR_QUARTILE_BY_CAT"],
-                                   "SCIMAGO", year,
-                                   value_txt=cat["quartile"])
+                    rankings_to_insert.append({
+                        "journal_id": jid, "subject_category_id": cat_id, "source": "SCIMAGO", "metric_id": metrics["SJR_QUARTILE_BY_CAT"], "year": year,
+                        "value_txt": cat["quartile"], "value_int": None, "value_float": None
+                    })
                     quartiles_all.append(cat["quartile"])
 
-            # Best quartile (no category)
+            # Best quartile
             bq = best_quartile(quartiles_all)
-            insert_ranking(conn, jid, None, metrics["SJR_BEST_QUARTILE"],
-                           "SCIMAGO", year, value_txt=bq)
+            if bq:
+                rankings_to_insert.append({
+                    "journal_id": jid, "subject_category_id": None, "source": "SCIMAGO", "metric_id": metrics["SJR_BEST_QUARTILE"], "year": year,
+                    "value_txt": bq, "value_int": None, "value_float": None
+                })
 
             # Numeric rankings
-            insert_ranking(conn, jid, None, metrics["RANK"],
-                           "SCIMAGO", year, value_int=norm_int(raw["rank_txt"]))
-            insert_ranking(conn, jid, None, metrics["SJR"],
-                           "SCIMAGO", year, value_float=norm_decimal(raw["sjr"]))
-            insert_ranking(conn, jid, None, metrics["H_INDEX"],
-                           "SCIMAGO", year, value_int=norm_int(raw["h_index"]))
-            insert_ranking(conn, jid, None, metrics["TOTAL_DOCS_CURRENT_YEAR"],
-                           "SCIMAGO", year, value_int=norm_int(raw["total_docs_current_year"]))
-            insert_ranking(conn, jid, None, metrics["TOTAL_DOCS_3YEARS"],
-                           "SCIMAGO", year, value_int=norm_int(raw["total_docs_3years"]))
-            insert_ranking(conn, jid, None, metrics["TOTAL_REFS"],
-                           "SCIMAGO", year, value_int=norm_int(raw["total_refs"]))
-            insert_ranking(conn, jid, None, metrics["TOTAL_CITES_3YEARS"],
-                           "SCIMAGO", year, value_int=norm_int(raw["total_cites_3years"]))
-            insert_ranking(conn, jid, None, metrics["CITABLE_DOCS_3YEARS"],
-                           "SCIMAGO", year, value_int=norm_int(raw["citable_docs_3years"]))
-            insert_ranking(conn, jid, None, metrics["CITES_PER_DOC_2YEARS"],
-                           "SCIMAGO", year, value_float=norm_decimal(raw["cites_doc_2years"]))
-            insert_ranking(conn, jid, None, metrics["REF_PER_DOC"],
-                           "SCIMAGO", year, value_float=norm_decimal(raw["ref_doc"]))
+            def add_num_rank(metric_key, raw_val, val_type):
+                val = raw.get(raw_val)
+                if val is not None and str(val).strip():
+                    v_int = norm_int(val) if val_type == "int" else None
+                    v_float = float(norm_decimal(val)) if val_type == "float" else None
+                    if v_int is not None or v_float is not None:
+                        rankings_to_insert.append({
+                            "journal_id": jid, "subject_category_id": None, "source": "SCIMAGO", "metric_id": metrics[metric_key], "year": year,
+                            "value_txt": None, "value_int": v_int, "value_float": v_float
+                        })
+
+            add_num_rank("RANK", "rank_txt", "int")
+            add_num_rank("SJR", "sjr", "float")
+            add_num_rank("H_INDEX", "h_index", "int")
+            add_num_rank("TOTAL_DOCS_CURRENT_YEAR", "total_docs_current_year", "int")
+            add_num_rank("TOTAL_DOCS_3YEARS", "total_docs_3years", "int")
+            add_num_rank("TOTAL_REFS", "total_refs", "int")
+            add_num_rank("TOTAL_CITES_3YEARS", "total_cites_3years", "int")
+            add_num_rank("CITABLE_DOCS_3YEARS", "citable_docs_3years", "int")
+            add_num_rank("CITES_PER_DOC_2YEARS", "cites_doc_2years", "float")
+            add_num_rank("REF_PER_DOC", "ref_doc", "float")
 
             ok += 1
-            if ok % 1000 == 0 or ok == total_rows:
-                print(f"[normalize] Processed {ok}/{total_rows} journals ({(ok * 100) // total_rows}%)")
+            if ok % 5000 == 0 or ok == total_rows:
+                print(f"[normalize] Prepared {ok}/{total_rows} journals ({(ok * 100) // total_rows}%)")
 
-        print(f"[normalize] ok={ok}, skipped={skipped}")
+        # Thực thi Bulk Insert cho Journal_Subject_Category
+        if subject_links_to_insert:
+            print(f"[normalize] Linking {len(subject_links_to_insert)} journals with categories...")
+            batch_size = 2000
+            for i in range(0, len(subject_links_to_insert), batch_size):
+                batch = subject_links_to_insert[i:i+batch_size]
+                bulk_insert_raw_sql(conn, "Journal_Subject_Category", ["journal_id", "subject_category_id"], batch, "ON CONFLICT DO NOTHING")
+
+        # Thực thi Bulk Insert cho Journal_Ranking
+        if rankings_to_insert:
+            # Lọc trùng để tránh CardinalityViolation trong bulk operation
+            unique_rankings = []
+            seen_ranking_keys = set()
+            for r in rankings_to_insert:
+                key = (
+                    r["journal_id"],
+                    r["source"],
+                    r["metric_id"],
+                    r["year"],
+                    r["value_txt"] or "",
+                    r["value_int"] or 0,
+                    r["value_float"] or 0.0
+                )
+                if key not in seen_ranking_keys:
+                    seen_ranking_keys.add(key)
+                    unique_rankings.append(r)
+            rankings_to_insert = unique_rankings
+
+            print(f"[normalize] Inserting {len(rankings_to_insert)} journal rankings...")
+            on_conflict = """
+                ON CONFLICT (journal_id, source, metric_id, year, 
+                             (coalesce(value_txt, ''::character varying)), 
+                             (coalesce(value_int, 0)), 
+                             (coalesce(value_float, (0)::double precision)))
+                DO UPDATE SET 
+                    subject_category_id = EXCLUDED.subject_category_id,
+                    created_at = EXCLUDED.created_at
+            """
+            batch_size = 1000
+            for i in range(0, len(rankings_to_insert), batch_size):
+                batch = rankings_to_insert[i:i+batch_size]
+                bulk_insert_raw_sql(conn, "Journal_Ranking", ["journal_id", "subject_category_id", "source", "metric_id", "year", "value_txt", "value_int", "value_float"], batch, on_conflict)
+
+            # Thực thi Bulk Insert cho Journal_Ranking_Subject_Category chỉ trong 1 câu SQL duy nhất!
+            print("[normalize] Linking journal rankings with categories...")
+            conn.execute(text("""
+                INSERT INTO "Journal_Ranking_Subject_Category" (journal_ranking_id, subject_category_id)
+                SELECT jr.journal_ranking_id, jr.subject_category_id
+                FROM "Journal_Ranking" jr
+                WHERE jr.source = 'SCIMAGO' AND jr.year = :year AND jr.subject_category_id IS NOT NULL
+                ON CONFLICT DO NOTHING
+            """), {"year": year})
+
+        print(f"[normalize] Completed! ok={ok}, skipped={skipped}")
 
 
 # ---------------------------------------------------------------

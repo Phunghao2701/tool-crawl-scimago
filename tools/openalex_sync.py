@@ -1027,6 +1027,10 @@ def _db_process_single_work(
             
             if v_row:
                 volume_uuid = v_row[0]
+                # Khôi phục nếu bị xóa logic
+                conn.execute(text("""
+                    UPDATE "Volume" SET is_deleted = false WHERE volume_id = :volume_id
+                """), {"volume_id": volume_uuid})
             else:
                 volume_uuid = conn.execute(text("""
                     INSERT INTO "Volume" (journal_id, volume_number, publication_year)
@@ -1472,7 +1476,7 @@ def cmd_stats_works():
         topics = conn.execute(text('SELECT COUNT(*) FROM "Topic"')).scalar()
         keywords = conn.execute(text('SELECT COUNT(*) FROM "Keyword"')).scalar()
         publishers = conn.execute(text('SELECT COUNT(*) FROM "Publisher"')).scalar()
-        volumes = conn.execute(text('SELECT COUNT(*) FROM "Volume"')).scalar()
+        volumes = conn.execute(text('SELECT COUNT(*) FROM "Volume" WHERE is_deleted = false')).scalar()
         issues = conn.execute(text('SELECT COUNT(*) FROM "Issue"')).scalar()
         sub_topics = conn.execute(text('SELECT COUNT(*) FROM "Sub_Topic"')).scalar()
         
