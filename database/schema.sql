@@ -186,7 +186,8 @@ CREATE TABLE "Journal" (
   "scope_detail" varchar,
   
   -- Cột phục vụ đồng bộ OpenAlex
-  "works_synced_at" timestamp
+  "works_synced_at" timestamp,
+  "is_deleted" boolean DEFAULT false
 );
 
 -- 13. Bảng Journal_Subject_Category (Many-to-Many)

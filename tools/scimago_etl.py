@@ -716,6 +716,7 @@ def cmd_stats(args):
                    j.is_open_access, z.name AS country
             FROM "Journal" j
             LEFT JOIN "Zone" z ON z.zone_id = j.country
+            WHERE j.is_deleted = false
             ORDER BY j.journal_id
             LIMIT 10
         """)).fetchall()
@@ -729,7 +730,7 @@ def cmd_stats(args):
             FROM "Journal_Ranking" jr
             JOIN "Journal" j        ON j.journal_id = jr.journal_id
             JOIN "Ranking_Metric" m ON m.metric_id  = jr.metric_id
-            WHERE m.code = 'SJR' AND jr.value_float IS NOT NULL
+            WHERE m.code = 'SJR' AND jr.value_float IS NOT NULL AND j.is_deleted = false
             ORDER BY jr.value_float DESC
             LIMIT 10
         """)).fetchall()

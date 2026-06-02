@@ -197,7 +197,7 @@ def sync_journals(limit: int):
             FROM raw_scimago_journal
             ORDER BY source_id, created_at DESC
         ) r ON j.source_id = r.source_id
-        WHERE j.source_id NOT LIKE 'https://openalex.org/%' AND j.source_id NOT LIKE 'S%'
+        WHERE j.source_id NOT LIKE 'https://openalex.org/%' AND j.source_id NOT LIKE 'S%' AND j.is_deleted = false
         ORDER BY 
             CASE WHEN r.rank_txt IS NULL OR r.rank_txt = '' THEN 999999 
                  ELSE CAST(r.rank_txt AS integer) 
@@ -413,8 +413,8 @@ def sync_journals(limit: int):
 def cmd_stats(args):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
-        total = conn.execute(text('SELECT COUNT(*) FROM "Journal"')).scalar()
-        synced = conn.execute(text("SELECT COUNT(*) FROM \"Journal\" WHERE source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%'")).scalar()
+        total = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE is_deleted = false')).scalar()
+        synced = conn.execute(text("SELECT COUNT(*) FROM \"Journal\" WHERE (source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%') AND is_deleted = false")).scalar()
         unsynced = total - synced
         
         print("\n[OpenAlex Sync Stats]")
@@ -428,7 +428,7 @@ def cmd_stats(args):
             rows = conn.execute(text("""
                 SELECT display_name, source_id, works_synced_at
                 FROM "Journal"
-                WHERE source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%'
+                WHERE (source_id LIKE 'https://openalex.org/%' OR source_id LIKE 'S%') AND is_deleted = false
                 ORDER BY works_synced_at DESC NULLS LAST
                 LIMIT 10
             """)).fetchall()
@@ -455,6 +455,7 @@ def cmd_export(args):
             journals = conn.execute(text("""
                 SELECT journal_id, source_id, issn, scope_detail, display_name, works_synced_at
                 FROM "Journal"
+                WHERE is_deleted = false
             """)).fetchall()
             
         # 2. Tải toàn bộ raw_scimago_journal (chỉ lấy bản ghi mới nhất cho mỗi source_id)
@@ -1330,7 +1331,7 @@ def sync_works(limit: int):
     query_journals = """
         SELECT journal_id, source_id, display_name
         FROM "Journal"
-        WHERE source_id LIKE 'https://openalex.org/%' AND works_synced_at IS NULL
+        WHERE source_id LIKE 'https://openalex.org/%' AND works_synced_at IS NULL AND is_deleted = false
         ORDER BY journal_id ASC
     """
     with engine.connect() as conn:
