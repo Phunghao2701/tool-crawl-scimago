@@ -1,8 +1,14 @@
 """
-Migrate all data from Local PostgreSQL -> Vercel PostgreSQL.
+Migrate / Sync data from Local PostgreSQL -> Vercel PostgreSQL.
 
 Usage:
-    python tools/migrate_local_to_vercel.py
+    python tools/migrate_local_to_vercel.py           # Incremental (default)
+    python tools/migrate_local_to_vercel.py --reset   # Full reset then copy
+
+Modes:
+    Incremental: Only INSERT rows missing on Vercel. Existing rows are kept.
+                 Journal sync status (works_synced_at) is updated if local is newer.
+    Full Reset:  TRUNCATE all Vercel tables first, then copy everything from local.
 
 Configuration:
     .env.local  -> LOCAL_DATABASE_URL
@@ -18,6 +24,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 import time
+import argparse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
@@ -65,8 +72,20 @@ IDENTITY_TABLES = {
     "Keyword", "Journal_Ranking", "raw_scimago_journal",
 }
 
+# For these tables, when a row already exists, UPDATE the sync-status columns
+# so Vercel knows what has already been synced locally.
+# Format: { table_name: [list of columns to UPDATE on conflict] }
+UPSERT_TABLES = {
+    "Journal": ["source_id", "display_name", "issn", "scope_detail",
+                "publisher_id", "country", "region", "works_synced_at", "is_deleted"],
+}
+
 CHUNK_SIZE = 500
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_columns(conn, table_name):
     rows = conn.execute(text("""
@@ -94,40 +113,85 @@ def count_rows(conn, table_name):
 def truncate_all(vercel_conn):
     print("\n[truncate] Clearing all data on Vercel DB...")
     for table in reversed(TABLES_ORDER):
-        vercel_conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
+        if table_exists(vercel_conn, table):
+            vercel_conn.execute(text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
     vercel_conn.commit()
     print("[truncate] Done.")
 
 
-def migrate_table(local_conn, vercel_conn, table_name):
-    t0 = time.time()
-    if not table_exists(local_conn, table_name):
-        print(f"  [{table_name}] Table not found in source, skipping.")
-        return
-    total = count_rows(local_conn, table_name)
-    if total == 0:
-        print(f"  [{table_name}] Empty, skipping.")
-        return
+# ─────────────────────────────────────────────────────────────────────────────
+# Core migrate: one table at a time
+# ─────────────────────────────────────────────────────────────────────────────
 
-    cols = get_columns(local_conn, table_name)
-    col_list = ", ".join(f'"{c}"' for c in cols)
+def build_insert_sql(table_name, cols):
+    """Build INSERT ... ON CONFLICT DO NOTHING (or DO UPDATE for upsert tables)."""
+    col_list   = ", ".join(f'"{c}"' for c in cols)
     param_list = ", ".join(f":{c}" for c in cols)
 
-    if table_name in IDENTITY_TABLES:
-        insert_sql = (
-            f'INSERT INTO "{table_name}" ({col_list}) '
-            f'OVERRIDING SYSTEM VALUE VALUES ({param_list}) '
-            f'ON CONFLICT DO NOTHING'
-        )
+    prefix = "OVERRIDING SYSTEM VALUE " if table_name in IDENTITY_TABLES else ""
+
+    if table_name in UPSERT_TABLES:
+        # Only update columns that actually exist in both local and Vercel
+        update_cols = [c for c in UPSERT_TABLES[table_name] if c in cols]
+        if not update_cols:
+            conflict_clause = "ON CONFLICT DO NOTHING"
+        else:
+            set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
+            # Find PK column (first column by convention for identity tables)
+            pk_col = cols[0]
+            conflict_clause = f'ON CONFLICT ("{pk_col}") DO UPDATE SET {set_clause}'
     else:
-        insert_sql = (
-            f'INSERT INTO "{table_name}" ({col_list}) '
-            f'VALUES ({param_list}) '
-            f'ON CONFLICT DO NOTHING'
-        )
+        conflict_clause = "ON CONFLICT DO NOTHING"
+
+    return (
+        f'INSERT INTO "{table_name}" ({col_list}) '
+        f'{prefix}VALUES ({param_list}) '
+        f'{conflict_clause}'
+    )
+
+
+def migrate_table(local_conn, vercel_conn, table_name, mode="incremental"):
+    """
+    Copy rows from local table -> Vercel table.
+
+    In incremental mode:
+      - Rows already on Vercel are skipped (ON CONFLICT DO NOTHING) OR updated
+        with latest sync status (for UPSERT_TABLES).
+    In reset mode:
+      - Tables were already truncated, so all rows are inserted fresh.
+    """
+    t0 = time.time()
+
+    if not table_exists(local_conn, table_name):
+        print(f"  [{table_name}] Not found in local, skipping.")
+        return 0
+
+    local_total = count_rows(local_conn, table_name)
+    if local_total == 0:
+        print(f"  [{table_name}] Empty in local, skipping.")
+        return 0
+
+    # In incremental mode, show how many are already on Vercel
+    vercel_existing = count_rows(vercel_conn, table_name) if mode == "incremental" else 0
+    if mode == "incremental" and vercel_existing > 0 and table_name not in UPSERT_TABLES:
+        print(f"  [{table_name}] Vercel already has {vercel_existing:,}/{local_total:,} rows - merging missing...")
+    elif mode == "incremental" and vercel_existing > 0 and table_name in UPSERT_TABLES:
+        print(f"  [{table_name}] Vercel has {vercel_existing:,}/{local_total:,} rows - upserting sync status...")
+
+    # Get columns (intersection of local & vercel to handle schema differences)
+    local_cols  = get_columns(local_conn, table_name)
+    vercel_cols = set(get_columns(vercel_conn, table_name)) if table_exists(vercel_conn, table_name) else set(local_cols)
+    cols = [c for c in local_cols if c in vercel_cols]
+
+    if not cols:
+        print(f"  [{table_name}] No matching columns, skipping.")
+        return 0
+
+    insert_sql = build_insert_sql(table_name, cols)
+    col_list   = ", ".join(f'"{c}"' for c in cols)
 
     offset = 0
-    inserted = 0
+    processed = 0
     while True:
         rows = local_conn.execute(text(
             f'SELECT {col_list} FROM "{table_name}" ORDER BY 1 LIMIT :lim OFFSET :off'
@@ -140,25 +204,37 @@ def migrate_table(local_conn, vercel_conn, table_name):
         vercel_conn.execute(text(insert_sql), batch)
         vercel_conn.commit()
 
-        inserted += len(rows)
-        pct = inserted / total * 100
+        processed += len(rows)
+        pct = processed / local_total * 100
         elapsed = time.time() - t0
-        print(f"  [{table_name}] {inserted:,}/{total:,} ({pct:.1f}%) - {elapsed:.1f}s", end="\r")
+        print(f"  [{table_name}] {processed:,}/{local_total:,} ({pct:.1f}%) - {elapsed:.1f}s", end="\r")
         offset += CHUNK_SIZE
 
     elapsed = time.time() - t0
-    print(f"  [{table_name}] OK {inserted:,} rows - {elapsed:.1f}s           ")
+    vercel_after = count_rows(vercel_conn, table_name)
+    print(f"  [{table_name}] OK  local={local_total:,}  vercel={vercel_after:,} - {elapsed:.1f}s           ")
+    return processed
 
 
-def run_migration():
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_migration(mode="incremental"):
     print("=" * 60)
-    print("  LOCAL -> VERCEL DATABASE MIGRATION")
+    if mode == "reset":
+        print("  LOCAL -> VERCEL  [FULL RESET MODE]")
+        print("  All Vercel data will be DELETED before copying.")
+    else:
+        print("  LOCAL -> VERCEL  [INCREMENTAL MODE]")
+        print("  Missing rows will be added. Existing rows kept.")
+        print("  Journal sync status will be updated.")
     print("=" * 60)
     print(f"  Source (Local) : {LOCAL_URL[:65]}...")
     print(f"  Target (Vercel): {VERCEL_URL[:65]}...")
     print()
 
-    local_engine = create_engine(LOCAL_URL)
+    local_engine  = create_engine(LOCAL_URL)
     vercel_engine = create_engine(VERCEL_URL)
 
     print("[check] Testing Local DB connection...")
@@ -171,43 +247,60 @@ def run_migration():
         db = conn.execute(text("SELECT current_database()")).scalar()
         print(f"  Vercel DB: {db} [OK]")
 
+    # Show comparison: local vs vercel
     print()
-    print("[info] Row counts in Local DB:")
-    with local_engine.connect() as conn:
+    print(f"  {'Table':<35} {'Local':>10} {'Vercel':>10}  Status")
+    print(f"  {'-'*35} {'-'*10} {'-'*10}  {'-'*20}")
+    with local_engine.connect() as lconn, vercel_engine.connect() as vconn:
         for tbl in TABLES_ORDER:
-            cnt = count_rows(conn, tbl)
-            if cnt > 0:
-                print(f"  {tbl}: {cnt:,}")
+            lcnt = count_rows(lconn, tbl)
+            vcnt = count_rows(vconn, tbl)
+            if lcnt == 0 and vcnt == 0:
+                continue
+            if lcnt == vcnt:
+                status = "up-to-date"
+            elif vcnt == 0:
+                status = "needs full copy"
+            elif vcnt < lcnt:
+                status = f"missing {lcnt - vcnt:,} rows"
+            else:
+                status = "vercel has more"
+            print(f"  {tbl:<35} {lcnt:>10,} {vcnt:>10,}  {status}")
 
     print()
-    ans = input("Proceed with migration? ALL Vercel data will be DELETED first. (y/N): ").strip().lower()
+    if mode == "reset":
+        ans = input("Proceed with FULL RESET? ALL Vercel data will be DELETED first. (y/N): ").strip().lower()
+    else:
+        ans = input("Proceed with INCREMENTAL sync? (y/N): ").strip().lower()
+
     if ans != "y":
         print("Cancelled.")
         return
 
     t_start = time.time()
 
-    with vercel_engine.begin() as vercel_conn:
-        vercel_conn.execute(text("SET session_replication_role = replica;"))
-        truncate_all(vercel_conn)
+    if mode == "reset":
+        with vercel_engine.begin() as vercel_conn:
+            vercel_conn.execute(text("SET session_replication_role = replica;"))
+            truncate_all(vercel_conn)
 
-    print("\n[migrate] Copying data...")
+    print("\n[migrate] Starting data sync...")
     with local_engine.connect() as local_conn:
         with vercel_engine.connect() as vercel_conn:
             vercel_conn.execute(text("SET session_replication_role = replica;"))
             vercel_conn.commit()
 
             for table in TABLES_ORDER:
-                migrate_table(local_conn, vercel_conn, table)
+                migrate_table(local_conn, vercel_conn, table, mode=mode)
 
             vercel_conn.execute(text("SET session_replication_role = DEFAULT;"))
             vercel_conn.commit()
 
     elapsed = time.time() - t_start
-    print(f"\n[OK] Migration completed in {elapsed:.1f}s!")
+    print(f"\n[OK] Sync completed in {elapsed:.1f}s!")
     print()
 
-    print("[verify] Row counts on Vercel DB after migration:")
+    print("[verify] Final row counts on Vercel DB:")
     with vercel_engine.connect() as conn:
         for tbl in TABLES_ORDER:
             cnt = count_rows(conn, tbl)
@@ -216,4 +309,12 @@ def run_migration():
 
 
 if __name__ == "__main__":
-    run_migration()
+    parser = argparse.ArgumentParser(description="Migrate Local PostgreSQL -> Vercel PostgreSQL")
+    parser.add_argument(
+        "--reset", action="store_true",
+        help="Full reset mode: truncate all Vercel tables first, then copy everything."
+    )
+    args = parser.parse_args()
+
+    mode = "reset" if args.reset else "incremental"
+    run_migration(mode=mode)

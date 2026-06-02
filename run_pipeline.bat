@@ -298,12 +298,34 @@ echo ==========================================
 echo  M. MIGRATE LOCAL -> VERCEL
 echo ==========================================
 echo.
-echo Script nay se sao chep TOAN BO du lieu tu Local DB sang Vercel DB.
-echo Du lieu cu tren Vercel se bi XOA SACH truoc khi copy.
+echo  Chon che do dong bo:
 echo.
-echo Luu y: .env hien tai van dung LOCAL DB sau khi migrate xong.
+echo  1. INCREMENTAL (Khuyen dung): Chi copy nhung gi chua co tren Vercel.
+echo     - Du lieu da co tren Vercel duoc giu nguyen.
+echo     - Tap chi da sync (works_synced_at) se cap nhat len Vercel.
+echo     - An toan, khong mat data.
 echo.
-python tools/migrate_local_to_vercel.py
+echo  2. FULL RESET: Xoa TOAN BO Vercel roi copy lai tu dau.
+echo     - NGUY HIEM: Toan bo data tren Vercel se bi mat!
+echo     - Dung khi muon dong bo lai hoan toan tu Local.
+echo.
+echo  3. Quay lai menu chinh.
+echo.
+set /p migrate_mode="Chon (1/2/3): "
+echo.
+
+if "%migrate_mode%"=="1" (
+    echo [INFO] Bat dau INCREMENTAL sync...
+    echo Luu y: .env hien tai van dung LOCAL DB sau khi migrate xong.
+    echo.
+    python tools/migrate_local_to_vercel.py
+)
+if "%migrate_mode%"=="2" (
+    echo [CANH BAO] FULL RESET se XOA TOAN BO du lieu tren Vercel!
+    echo.
+    python tools/migrate_local_to_vercel.py --reset
+)
+if "%migrate_mode%"=="3" goto menu
 echo.
 pause
 goto menu
