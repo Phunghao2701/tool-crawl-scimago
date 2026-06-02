@@ -2,6 +2,8 @@
 
 Hệ thống ETL (Extract, Transform, Load) nội bộ được viết bằng Python giúp thu thập, staging và chuẩn hóa dữ liệu xếp hạng tạp chí khoa học từ **Scimago** phối hợp làm phong phú thông tin chi tiết qua **OpenAlex API** vào cơ sở dữ liệu PostgreSQL.
 
+> 📖 **Xem thêm:** [DATABASE_GUIDE.md](./DATABASE_GUIDE.md) — Hướng dẫn quản lý DB (Local ↔ Vercel), migrate data, thêm bảng mới.
+
 ---
 
 ## 📈 Quy trình xử lý (ETL Pipeline)
