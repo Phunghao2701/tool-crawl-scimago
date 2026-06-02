@@ -46,7 +46,7 @@ def main():
 
     try:
         with engine.connect() as conn:
-            count = conn.execute(text('SELECT COUNT(*) FROM "Journal"')).scalar()
+            count = conn.execute(text('SELECT COUNT(*) FROM "Journal" WHERE is_deleted = false')).scalar()
             
         if count > 0:
             print(f"[auto-init] Database already has {count} journals. Skipping auto-import.")
