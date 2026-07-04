@@ -32,7 +32,7 @@ DATABASE_URL = os.getenv(
 
 SCIMAGO_DEFAULT_URL = "https://www.scimagojr.com/journalrank.php?out=xls"
 
-# Map cột Scimago → tên cột staging
+# Map cột Scimago → tên cột staging trong bộ nhớ
 COLUMN_MAP = {
     "Rank": "rank_txt",
     "Sourceid": "source_id",
@@ -169,22 +169,66 @@ def split_issns(v: str):
     return cleaned
 
 
+def split_subject_names(value: str):
+    """
+    Split Scimago subject labels by semicolon, comma, and the word "and".
+
+    Examples:
+    - "Biochemistry, Genetics and Molecular Biology"
+      -> ["Biochemistry", "Genetics", "Molecular Biology"]
+    - "Economics, Econometrics and Finance"
+      -> ["Economics", "Econometrics", "Finance"]
+    """
+    if not value:
+        return []
+
+    names = []
+    seen = set()
+    for chunk in [x.strip() for x in str(value).split(";") if x.strip()]:
+        for part in re.split(r"\s*,\s*|\s+and\s+", chunk, flags=re.IGNORECASE):
+            name = re.sub(r"^(?:and)\s+|\s+(?:and)$", "", part.strip(), flags=re.IGNORECASE).strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                names.append(name)
+    return names
+
+
 def parse_categories(v: str):
     """
-    'Oncology (Q1); Hematology (Q2)' →
-    [{'name': 'Oncology', 'quartile': 'Q1'}, ...]
+    'Oncology (Q1); Economics, Econometrics and Finance (Q2)' →
+    [{'name': 'Oncology', 'quartile': 'Q1'},
+     {'name': 'Economics', 'quartile': 'Q2'}, ...]
     """
     if not v:
         return []
     result = []
+    seen = set()
     for chunk in [x.strip() for x in v.split(";") if x.strip()]:
         m = re.match(r"^(.*?)\s*\((Q[1-4])\)\s*$", chunk)
         if m:
-            result.append({"name": m.group(1).strip(), "quartile": m.group(2)})
+            raw_name = m.group(1).strip()
+            quartile = m.group(2)
         else:
-            result.append({"name": chunk, "quartile": None})
+            raw_name = chunk
+            quartile = None
+
+        for name in split_subject_names(raw_name):
+            key = (name.lower(), quartile)
+            if key not in seen:
+                seen.add(key)
+                result.append({"name": name, "quartile": quartile})
     return result
 
+
+def parse_areas(v: str):
+    """
+    'Medicine; Pharmacology, Toxicology and Pharmaceutics' →
+    ['Medicine', 'Pharmacology', 'Toxicology', 'Pharmaceutics']
+    """
+    return split_subject_names(v)
 
 def best_quartile(quartiles):
     order = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4}
@@ -351,7 +395,7 @@ def upsert_subject_category(conn, area_id, name: str):
     return row[0]
 
 
-def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
+def insert_ranking(conn, journal_id, category_id, metric_id, year,
                    value_txt=None, value_int=None, value_float=None):
     if value_txt is None and value_int is None and value_float is None:
         return None
@@ -361,19 +405,19 @@ def insert_ranking(conn, journal_id, category_id, metric_id, source, year,
     # Upsert Journal_Ranking và lấy id
     row = conn.execute(text("""
         INSERT INTO "Journal_Ranking"
-            (journal_id, subject_category_id, source, metric_id, year, value_txt, value_int, value_float)
+            (journal_id, subject_category_id, metric_id, year, value_txt, value_int, value_float)
         VALUES
-            (:jid, :cid, :src, :mid, :yr, :vtxt, :vint, :vfloat)
-        ON CONFLICT (journal_id, source, metric_id, year, 
-                     (coalesce(value_txt, '')), 
-                     (coalesce(value_int, 0)), 
+            (:jid, :cid, :mid, :yr, :vtxt, :vint, :vfloat)
+        ON CONFLICT (journal_id, metric_id, year, 
+                     (coalesce(value_txt, '')),
+                     (coalesce(value_int, 0)),
                      (coalesce(value_float, 0)))
         DO UPDATE SET 
             subject_category_id = EXCLUDED.subject_category_id,
             created_at = EXCLUDED.created_at
         RETURNING journal_ranking_id
     """), {
-        "jid": journal_id, "cid": category_id, "src": source.upper(), "mid": metric_id, "yr": year,
+        "jid": journal_id, "cid": category_id, "mid": metric_id, "yr": year,
         "vtxt": value_txt, "vint": value_int, "vfloat": v_float
     }).fetchone()
     
@@ -484,11 +528,11 @@ def build_col_map(df_columns):
     return mapping
 
 
-def insert_raw(engine, df: pd.DataFrame, batch_id: str):
+def prepare_raw_rows(df: pd.DataFrame) -> list[dict]:
     col_map = build_col_map(df.columns)
     rows = []
     for _, row in df.iterrows():
-        item = {"import_batch_id": batch_id}
+        item = {}
         for original_col, target_col in col_map.items():
             item[target_col] = row.get(original_col, "")
         # fill missing staging cols with empty string
@@ -496,37 +540,18 @@ def insert_raw(engine, df: pd.DataFrame, batch_id: str):
         for c in staging_cols:
             if c not in item:
                 item[c] = ""
-        item["raw_json"] = json.dumps(row.to_dict(), ensure_ascii=False)
+        item["raw_json"] = row.to_dict()
         rows.append(item)
 
-    with engine.begin() as conn:
-        batch_size = 2000
-        for i in range(0, len(rows), batch_size):
-            batch = rows[i:i+batch_size]
-            conn.execute(text("""
-                INSERT INTO raw_scimago_journal (
-                    import_batch_id, rank_txt, source_id, title, type, issn,
-                    publisher, open_access, open_access_diamond, sjr, h_index,
-                    total_docs_current_year, total_docs_3years, total_refs,
-                    total_cites_3years, citable_docs_3years, cites_doc_2years,
-                    ref_doc, country, region, categories, areas, raw_json
-                ) VALUES (
-                    :import_batch_id, :rank_txt, :source_id, :title, :type, :issn,
-                    :publisher, :open_access, :open_access_diamond, :sjr, :h_index,
-                    :total_docs_current_year, :total_docs_3years, :total_refs,
-                    :total_cites_3years, :citable_docs_3years, :cites_doc_2years,
-                    :ref_doc, :country, :region, :categories, :areas,
-                    CAST(:raw_json AS JSONB)
-                )
-            """), batch)
-    print(f"[stage] inserted {len(rows)} rows -> raw_scimago_journal")
+    print(f"[stage] prepared {len(rows)} rows in memory")
+    return rows
 
 
 # ---------------------------------------------------------------
 # Normalize to main tables
 # ---------------------------------------------------------------
 
-def normalize(engine, batch_id: str, year: int):
+def normalize(engine, raw_rows: list[dict], year: int):
     with engine.begin() as conn:
         # pre-load metric ids
         metrics = {
@@ -544,9 +569,6 @@ def normalize(engine, batch_id: str, year: int):
             "REF_PER_DOC":             upsert_metric(conn, "REF_PER_DOC", "Ref / Doc", "SCORE"),
         }
 
-        raw_rows = conn.execute(text(
-            "SELECT * FROM raw_scimago_journal WHERE import_batch_id = :bid"
-        ), {"bid": batch_id}).mappings().all()
 
         total_rows = len(raw_rows)
         print(f"[normalize] Start processing {total_rows} journals to main database tables...")
@@ -721,37 +743,44 @@ def normalize(engine, batch_id: str, year: int):
                 skipped += 1
                 continue
 
-            # Subject categories
+            # Subject categories + split subject areas
             categories = parse_categories(raw["categories"])
+            areas = parse_areas(raw.get("areas")) or ["General"]
             quartiles_all = []
-            for cat in categories:
-                area_name = (raw.get("areas") or "").strip() or "General"
-                if area_name not in subject_area_cache:
-                    subject_area_cache[area_name] = upsert_subject_area(conn, area_name)
-                area_id = subject_area_cache[area_name]
+            for cat_idx, cat in enumerate(categories):
+                # Nếu Scimago trả cùng số lượng Areas và Categories, map theo vị trí.
+                # Nếu không, liên kết category với tất cả areas để tránh lưu display_name gộp.
+                area_names = [areas[cat_idx]] if len(areas) == len(categories) else areas
 
-                cat_name = cat["name"]
-                cat_key = (area_id, cat_name)
-                if cat_key not in subject_category_cache:
-                    subject_category_cache[cat_key] = upsert_subject_category(conn, area_id, cat_name)
-                cat_id = subject_category_cache[cat_key]
+                for area_name in area_names:
+                    if area_name not in subject_area_cache:
+                        subject_area_cache[area_name] = upsert_subject_area(conn, area_name)
+                    area_id = subject_area_cache[area_name]
 
-                # Link category
-                subject_links_to_insert.append({"journal_id": jid, "subject_category_id": cat_id})
+                    cat_name = cat["name"]
+                    cat_key = (area_id, cat_name)
+                    if cat_key not in subject_category_cache:
+                        subject_category_cache[cat_key] = upsert_subject_category(conn, area_id, cat_name)
+                    cat_id = subject_category_cache[cat_key]
 
-                # quartile per category
+                    # Link category
+                    subject_links_to_insert.append({"journal_id": jid, "subject_category_id": cat_id})
+
+                    # quartile per category
+                    if cat["quartile"]:
+                        rankings_to_insert.append({
+                            "journal_id": jid, "subject_category_id": cat_id, "metric_id": metrics["SJR_QUARTILE_BY_CAT"], "year": year,
+                            "value_txt": cat["quartile"], "value_int": None, "value_float": None
+                        })
+
                 if cat["quartile"]:
-                    rankings_to_insert.append({
-                        "journal_id": jid, "subject_category_id": cat_id, "source": "SCIMAGO", "metric_id": metrics["SJR_QUARTILE_BY_CAT"], "year": year,
-                        "value_txt": cat["quartile"], "value_int": None, "value_float": None
-                    })
                     quartiles_all.append(cat["quartile"])
 
             # Best quartile
             bq = best_quartile(quartiles_all)
             if bq:
                 rankings_to_insert.append({
-                    "journal_id": jid, "subject_category_id": None, "source": "SCIMAGO", "metric_id": metrics["SJR_BEST_QUARTILE"], "year": year,
+                    "journal_id": jid, "subject_category_id": None, "metric_id": metrics["SJR_BEST_QUARTILE"], "year": year,
                     "value_txt": bq, "value_int": None, "value_float": None
                 })
 
@@ -763,7 +792,7 @@ def normalize(engine, batch_id: str, year: int):
                     v_float = float(norm_decimal(val)) if val_type == "float" else None
                     if v_int is not None or v_float is not None:
                         rankings_to_insert.append({
-                            "journal_id": jid, "subject_category_id": None, "source": "SCIMAGO", "metric_id": metrics[metric_key], "year": year,
+                            "journal_id": jid, "subject_category_id": None, "metric_id": metrics[metric_key], "year": year,
                             "value_txt": None, "value_int": v_int, "value_float": v_float
                         })
 
@@ -798,7 +827,6 @@ def normalize(engine, batch_id: str, year: int):
             for r in rankings_to_insert:
                 key = (
                     r["journal_id"],
-                    r["source"],
                     r["metric_id"],
                     r["year"],
                     r["value_txt"] or "",
@@ -812,7 +840,7 @@ def normalize(engine, batch_id: str, year: int):
 
             print(f"[normalize] Inserting {len(rankings_to_insert)} journal rankings...")
             on_conflict = """
-                ON CONFLICT (journal_id, source, metric_id, year, 
+                ON CONFLICT (journal_id, metric_id, year, 
                              (coalesce(value_txt, ''::character varying)), 
                              (coalesce(value_int, 0)), 
                              (coalesce(value_float, (0)::double precision)))
@@ -823,7 +851,7 @@ def normalize(engine, batch_id: str, year: int):
             batch_size = 1000
             for i in range(0, len(rankings_to_insert), batch_size):
                 batch = rankings_to_insert[i:i+batch_size]
-                bulk_insert_raw_sql(conn, "Journal_Ranking", ["journal_id", "subject_category_id", "source", "metric_id", "year", "value_txt", "value_int", "value_float"], batch, on_conflict)
+                bulk_insert_raw_sql(conn, "Journal_Ranking", ["journal_id", "subject_category_id", "metric_id", "year", "value_txt", "value_int", "value_float"], batch, on_conflict)
 
             # Thực thi Bulk Insert cho Journal_Ranking_Subject_Category chỉ trong 1 câu SQL duy nhất!
             print("[normalize] Linking journal rankings with categories...")
@@ -831,7 +859,7 @@ def normalize(engine, batch_id: str, year: int):
                 INSERT INTO "Journal_Ranking_Subject_Category" (journal_ranking_id, subject_category_id)
                 SELECT jr.journal_ranking_id, jr.subject_category_id
                 FROM "Journal_Ranking" jr
-                WHERE jr.source = 'SCIMAGO' AND jr.year = :year AND jr.subject_category_id IS NOT NULL
+                WHERE jr.year = :year AND jr.subject_category_id IS NOT NULL
                 ON CONFLICT DO NOTHING
             """), {"year": year})
 
@@ -867,20 +895,16 @@ def cmd_import(args):
         df = df.head(args.limit)
         print(f"[import] limit={args.limit}")
 
-    batch_id = str(uuid.uuid4())
-    print(f"[import] batch_id={batch_id}, rows={len(df)}, year={args.year}")
+    raw_rows = prepare_raw_rows(df)
+    normalize(engine, raw_rows, args.year)
 
-    insert_raw(engine, df, batch_id)
-    normalize(engine, batch_id, args.year)
-
-    print(f"\n[OK] Import done! batch_id={batch_id}")
+    print("\n[OK] Import done!")
 
 
 def cmd_stats(args):
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         tables = [
-            "raw_scimago_journal",
             "Publisher", "Zone", "Journal",
             "Subject_Area", "Subject_Category", "Journal_Subject_Category",
             "Ranking_Metric", "Journal_Ranking",

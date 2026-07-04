@@ -36,6 +36,8 @@ services:
       - "8080:8080"
     depends_on:
       - postgres
+    volumes:
+      - ./php-custom.ini:/usr/local/etc/php/conf.d/php-custom.ini
 
 volumes:
   postgres_data:

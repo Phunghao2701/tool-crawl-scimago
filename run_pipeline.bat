@@ -6,6 +6,8 @@ rem Auto-create .env file if it does not exist
 if not exist .env (
     echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db > .env
     echo OPENALEX_EMAIL=academic-etl@example.com >> .env
+    echo SEMANTIC_SCHOLAR_BASE_URL=https://api.semanticscholar.org/graph/v1 >> .env
+    echo SEMANTIC_SCHOLAR_RPS=1 >> .env
     echo [INFO] Da tu dong tao file .env mac dinh vi khong tim thay!
 )
 
@@ -29,26 +31,29 @@ echo  2. Import Scimago Data: Import file Scimago tho tu thu muc data
 echo  3. Sync OpenAlex Journals: Dong bo thong tin tap chi tu OpenAlex API
 echo  4. Sync OpenAlex Works: Dong bo bai bao (Works, Topics, Keywords)
 echo  5. Sync OpenAlex Authors: Dong bo chi tiet tac gia (Da luong sieu nhanh)
+echo  E. Enrich Semantic Scholar: Lam giau du lieu bai bao tu Semantic Scholar
+echo  R. Backfill References: Lay references chi tiet tu OpenAlex / Semantic
 echo  6. Export Report: Xuat bao cao Excel va CSV
 echo  7. View Database Statistics: Xem so lieu thong ke trong database
 echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
 echo  M. Migrate Local -^> Vercel: Chuyen toan bo data tu Local len Vercel
 echo  9. Exit: Thoat
 echo ====================================================================
-set /p choice="Vui long chon chuc nang (0-9, M): "
-
-if "%choice%"=="0" goto switch_db
-if "%choice%"=="1" goto setup
-if "%choice%"=="2" goto import
-if "%choice%"=="3" goto sync_journals
-if "%choice%"=="4" goto sync_works
-if "%choice%"=="5" goto sync_authors_cmd
-if "%choice%"=="6" goto export
-if "%choice%"=="7" goto stats
-if "%choice%"=="8" goto full
-if /i "%choice%"=="M" goto migrate_to_vercel
-if "%choice%"=="9" goto exit
-goto menu
+choice /c 1234567890ERM /n /m "Vui long chon chuc nang (1-9, 0, E, R, M): "
+echo [DEBUG] Lua chon nhan duoc: errorlevel=%errorlevel%
+if errorlevel 13 goto migrate_to_vercel
+if errorlevel 12 goto backfill_references
+if errorlevel 11 goto sync_semantic
+if errorlevel 10 goto switch_db
+if errorlevel 9 goto exit
+if errorlevel 8 goto full
+if errorlevel 7 goto stats
+if errorlevel 6 goto export
+if errorlevel 5 goto sync_authors_cmd
+if errorlevel 4 goto sync_works
+if errorlevel 3 goto sync_journals
+if errorlevel 2 goto import
+if errorlevel 1 goto setup
 
 :setup
 cls
@@ -246,6 +251,10 @@ if errorlevel 1 (
 )
 
 echo.
+echo [2.5/3] Dang tien hanh lam giau du lieu bai bao tu Semantic Scholar API...
+python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit 20
+
+echo.
 echo [3/3] Dang tien hanh ket xuat tat ca cac bao cao Excel va CSV...
 python tools/openalex_sync.py export
 python tools/openalex_sync.py export-authors
@@ -282,7 +291,7 @@ if "%db_choice%"=="1" (
     goto menu
 )
 if "%db_choice%"=="2" (
-    echo DATABASE_URL=postgresql+psycopg2://69f8401866983bec6a1d9f8633138409dada50ffad23ca628de6337632aec611:sk_319LYXnAvsyeOyLSFkint@db.prisma.io:5432/postgres?sslmode=require> .env
+    echo DATABASE_URL=postgresql+psycopg2://8b22d4c854c9d742f0eaa0da80bd1208bcd3c18cfe5d2667f7c06d7f38905f81:sk__9UjMxIRIGy7X2dRACsdc@db.prisma.io:5432/postgres?sslmode=require> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
     echo OPENALEX_API_KEY=QMpnNu39KD8pRteBiQzGqe>> .env
     echo.
@@ -302,7 +311,7 @@ echo  Chon che do dong bo:
 echo.
 echo  1. INCREMENTAL (Khuyen dung): Chi copy nhung gi chua co tren Vercel.
 echo     - Du lieu da co tren Vercel duoc giu nguyen.
-echo     - Tap chi da sync (works_synced_at) se cap nhat len Vercel.
+echo     - Dong bo theo schema moi tren Vercel/Supabase.
 echo     - An toan, khong mat data.
 echo.
 echo  2. FULL RESET: Xoa TOAN BO Vercel roi copy lai tu dau.
@@ -326,6 +335,98 @@ if "%migrate_mode%"=="2" (
     python tools/migrate_local_to_vercel.py --reset
 )
 if "%migrate_mode%"=="3" goto menu
+echo.
+pause
+goto menu
+
+:sync_semantic
+cls
+call :check_db
+echo ==========================================
+echo  E. ENRICH SEMANTIC SCHOLAR
+echo ==========================================
+echo [INFO] Ban co the tuy chon so luong bai bao hoac chay toan bo.
+echo  1. Lam giau tat ca bai bao (Quet lai tu dau)
+echo  2. Chi lam giau bai bao con thieu (Khuyen dung - Bo qua bai da quet)
+echo.
+set /p semantic_mode="Chon (1/2): "
+if "%semantic_mode%"=="" set semantic_mode=2
+
+echo.
+set /p s_limit="Nhap gioi han bai viet can quet (Nhan Enter de chay 100, Nhap 0 de quet TOAN BO): "
+if "%s_limit%"=="" set s_limit=100
+
+echo.
+echo [INFO] Bat dau lam giau du lieu voi gioi han: %s_limit%
+if "%semantic_mode%"=="1" (
+    python tools/semantic_scholar_sync.py enrich-articles --limit %s_limit%
+) else (
+    python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit %s_limit%
+)
+echo.
+pause
+goto menu
+
+:backfill_references
+cls
+call :check_db
+echo ==========================================
+echo  R. BACKFILL REFERENCES
+echo ==========================================
+echo  1. OpenAlex only  - Cap nhat references + reference_count tu OpenAlex
+echo  2. Semantic only  - Bo sung references/reference_count neu OpenAlex chua co
+echo  3. Both          - Chay OpenAlex truoc, roi Semantic bo sung
+echo                   - Chuan hoa DOI trong references
+echo  4. Quay lai menu chinh
+echo.
+set /p ref_mode="Chon (1/2/3/4): "
+if "%ref_mode%"=="" set ref_mode=1
+if "%ref_mode%"=="4" goto menu
+
+echo.
+set /p ref_limit="Nhap gioi han bai viet can quet (Nhan Enter de chay 100, Nhap 0 de quet TOAN BO): "
+if "%ref_limit%"=="" set ref_limit=100
+
+echo.
+set /p ref_min_year="Nhap nam toi thieu de uu tien bai moi (Nhan Enter de bo qua): "
+
+echo.
+if "%ref_mode%"=="1" goto backfill_openalex_only
+if "%ref_mode%"=="2" goto backfill_semantic_only
+if "%ref_mode%"=="3" goto backfill_both
+goto backfill_references
+
+:backfill_openalex_only
+echo [INFO] Bat dau backfill references tu OpenAlex...
+if "%ref_min_year%"=="" (
+    python tools/openalex_reference_backfill.py --limit %ref_limit%
+) else (
+    python tools/openalex_reference_backfill.py --limit %ref_limit% --min-year %ref_min_year%
+)
+goto backfill_refs_end
+
+:backfill_semantic_only
+echo [INFO] Bat dau bo sung references tu Semantic Scholar...
+python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit %ref_limit%
+goto backfill_refs_end
+
+:backfill_both
+echo [INFO] Buoc 1/2: Backfill references tu OpenAlex...
+if "%ref_min_year%"=="" (
+    python tools/openalex_reference_backfill.py --limit %ref_limit%
+) else (
+    python tools/openalex_reference_backfill.py --limit %ref_limit% --min-year %ref_min_year%
+)
+echo.
+echo [INFO] Buoc 2/2: Bo sung references tu Semantic Scholar...
+python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit %ref_limit%
+
+:backfill_refs_end
+echo.
+echo [INFO] Buoc cuoi: Chuan hoa DOI trong references...
+python tools/merge_reference_dois.py --limit %ref_limit%
+echo.
+echo [OK] Backfill references hoan tat!
 echo.
 pause
 goto menu

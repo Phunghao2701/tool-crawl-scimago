@@ -1,0 +1,35 @@
+{
+  "updated_at": "2026-06-30",
+  "scope": "paper-vn-backfill-retry-authorship-completeness-corrective",
+  "worktree": "scratch/papervn_worktree",
+  "branch": "hao/feature/paper-vn",
+  "commands": [
+    {
+      "command": "python -m py_compile tools/vn_journals/backfill_institutions.py tools/vn_journals/paper_vn_affiliations.py",
+      "cwd": "scratch/papervn_worktree",
+      "status": "passed"
+    },
+    {
+      "command": "python tools/vn_journals/backfill_institutions.py --help",
+      "cwd": "scratch/papervn_worktree",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --cached --check",
+      "cwd": "scratch/papervn_worktree",
+      "status": "passed"
+    },
+    {
+      "command": "python -m unittest discover -s tests -p \"test_vn_*.py\" -v",
+      "cwd": "scratch/papervn_worktree",
+      "status": "passed",
+      "tests": 66
+    }
+  ],
+  "production_backfill_run": false,
+  "commit_or_push_run": false,
+  "notes": [
+    "Test suite uses SQLite, mocks, and temp files only.",
+    "No production checkpoint/report, env file, cache, pyc, or dump was intentionally staged for this corrective sprint."
+  ]
+}

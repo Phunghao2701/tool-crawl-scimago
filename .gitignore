@@ -20,4 +20,6 @@ venv/
 env/
 scratch/
 ERRORS_PREVENTION.md
-test_openalex_api.py
+test_openalex_api.pydata/*.sql
+
+data/*.sql

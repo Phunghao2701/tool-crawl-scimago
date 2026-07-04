@@ -1,0 +1,24 @@
+[
+  {
+    "code": "vnu_ees",
+    "name_vi": "Tạp chí Khoa học ĐHQGHN: Khoa học Trái đất và Môi trường",
+    "name_en": "VNU Journal of Science: Earth and Environmental Sciences",
+    "university": "Đại học Quốc gia Hà Nội",
+    "base_url": "https://js.vnu.edu.vn/EES/",
+    "archive_url": "https://js.vnu.edu.vn/EES/issue/archive",
+    "platform": "ojs",
+    "language": "vi,en",
+    "subject_hint": "Earth and Environmental Sciences"
+  },
+  {
+    "code": "ctu_jst",
+    "name_vi": "Tạp chí Khoa học Đại học Cần Thơ",
+    "name_en": "Can Tho University Journal of Science",
+    "university": "Trường Đại học Cần Thơ",
+    "base_url": "https://ctujsvn.ctu.edu.vn/index.php/ctujsvn/",
+    "archive_url": "https://ctujsvn.ctu.edu.vn/index.php/ctujsvn/issue/archive",
+    "platform": "ojs",
+    "language": "vi,en",
+    "subject_hint": "Multidisciplinary"
+  }
+]

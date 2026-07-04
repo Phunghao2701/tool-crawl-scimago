@@ -1,0 +1,330 @@
+{
+  "tables": [
+    {
+      "name": "Publisher",
+      "columns": [
+        "publisher_id",
+        "display_name",
+        "image_url",
+        "created_at"
+      ],
+      "where": "publisher_id IN (SELECT publisher_id FROM \"Journal\" WHERE journal_id IN (SELECT journal_id FROM \"Volume\" WHERE volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL) AND journal_id IS NOT NULL) AND publisher_id IS NOT NULL)",
+      "order_by": "publisher_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Topic",
+      "columns": [
+        "topic_id",
+        "display_name",
+        "score",
+        "subject_area_id",
+        "subject_category_id",
+        "is_deleted"
+      ],
+      "where": "topic_id IN (SELECT topic_id FROM \"Sub_Topic\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000))",
+      "order_by": "topic_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Journal",
+      "columns": [
+        "journal_id",
+        "source_id",
+        "publisher_id",
+        "country",
+        "region",
+        "display_name",
+        "type",
+        "is_open_access",
+        "is_oa_diamond",
+        "coverage",
+        "issn",
+        "created_at",
+        "is_deleted"
+      ],
+      "where": "journal_id IN (SELECT journal_id FROM \"Volume\" WHERE volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL) AND journal_id IS NOT NULL)",
+      "order_by": "journal_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Article",
+      "columns": [
+        "article_id",
+        "version",
+        "issue_id",
+        "title",
+        "abstract",
+        "publication_year",
+        "doi",
+        "primary_topic",
+        "created_at",
+        "is_deleted",
+        "references",
+        "reference_count",
+        "semantic_scholar_id",
+        "citation_count",
+        "semantic_influential_citation_count",
+        "semantic_external_ids",
+        "semantic_tldr"
+      ],
+      "where": "reference_count > 0",
+      "order_by": "article_id ASC",
+      "limit": 3000
+    },
+    {
+      "name": "Author",
+      "columns": [
+        "author_id",
+        "orcid",
+        "display_name",
+        "url_image",
+        "openalex_id",
+        "works_count",
+        "cited_by_count",
+        "h_index",
+        "i10_index",
+        "last_known_institution",
+        "last_known_institution_id",
+        "created_at",
+        "is_deleted"
+      ],
+      "where": "author_id IN (SELECT author_id FROM \"Author_Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000))",
+      "order_by": "author_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Author_Article",
+      "columns": [
+        "author_id",
+        "article_id"
+      ],
+      "where": "article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000)",
+      "order_by": "article_id ASC, author_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Issue",
+      "columns": [
+        "issue_id",
+        "volume_id",
+        "issue_number",
+        "publication_year",
+        "is_deleted"
+      ],
+      "where": "issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL)",
+      "order_by": "issue_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Journal_Ranking",
+      "columns": [
+        "journal_ranking_id",
+        "journal_id",
+        "subject_category_id",
+        "metric_id",
+        "year",
+        "value_txt",
+        "value_int",
+        "value_float",
+        "created_at"
+      ],
+      "where": "journal_id IN (SELECT journal_id FROM \"Volume\" WHERE volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL) AND journal_id IS NOT NULL)",
+      "order_by": "journal_id ASC, year DESC NULLS LAST, metric_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Journal_Ranking_Subject_Category",
+      "columns": [
+        "journal_ranking_id",
+        "subject_category_id"
+      ],
+      "where": "journal_ranking_id IN (SELECT journal_ranking_id FROM \"Journal_Ranking\" WHERE journal_id IN (SELECT journal_id FROM \"Volume\" WHERE volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL) AND journal_id IS NOT NULL))",
+      "order_by": "journal_ranking_id ASC, subject_category_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Journal_Subject_Category",
+      "columns": [
+        "journal_id",
+        "subject_category_id"
+      ],
+      "where": "journal_id IN (SELECT journal_id FROM \"Volume\" WHERE volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL) AND journal_id IS NOT NULL)",
+      "order_by": "journal_id ASC, subject_category_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Keyword",
+      "columns": [
+        "keyword_id",
+        "display_name"
+      ],
+      "where": "keyword_id IN (SELECT keyword_id FROM \"Keyword_Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000))",
+      "order_by": "keyword_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Keyword_Article",
+      "columns": [
+        "keyword_id",
+        "article_id",
+        "score"
+      ],
+      "where": "article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000)",
+      "order_by": "article_id ASC, keyword_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Password_Reset_Token",
+      "columns": [
+        "token_id",
+        "user_id",
+        "token_hash",
+        "expires_at",
+        "used_at",
+        "created_at"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    },
+    {
+      "name": "Project",
+      "columns": [
+        "project_id",
+        "user_id",
+        "subject_area",
+        "title",
+        "created_at"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    },
+    {
+      "name": "Project_Journal",
+      "columns": [
+        "project_id",
+        "journal_id"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    },
+    {
+      "name": "Project_Keyword",
+      "columns": [
+        "project_id",
+        "keyword_id"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    },
+    {
+      "name": "Ranking_Metric",
+      "columns": [
+        "metric_id",
+        "code",
+        "display_name",
+        "metric_type",
+        "description"
+      ],
+      "where": "",
+      "order_by": "metric_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Sub_Topic",
+      "columns": [
+        "article_id",
+        "topic_id"
+      ],
+      "where": "article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000)",
+      "order_by": "article_id ASC, topic_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Subject_Area",
+      "columns": [
+        "subject_area_id",
+        "display_name",
+        "description",
+        "is_deleted"
+      ],
+      "where": "",
+      "order_by": "subject_area_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Subject_Category",
+      "columns": [
+        "subject_category_id",
+        "subject_area_id",
+        "display_name",
+        "description",
+        "is_deleted"
+      ],
+      "where": "",
+      "order_by": "subject_category_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Subject_Category_Project",
+      "columns": [
+        "project_id",
+        "subject_category_id"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    },
+    {
+      "name": "Volume",
+      "columns": [
+        "volume_id",
+        "journal_id",
+        "volume_number",
+        "publication_year",
+        "is_deleted"
+      ],
+      "where": "volume_id IN (SELECT volume_id FROM \"Issue\" WHERE issue_id IN (SELECT issue_id FROM \"Article\" WHERE article_id IN (SELECT article_id FROM \"Article\" WHERE reference_count > 0 ORDER BY article_id ASC LIMIT 3000) AND issue_id IS NOT NULL) AND volume_id IS NOT NULL)",
+      "order_by": "volume_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "Zone",
+      "columns": [
+        "zone_id",
+        "code",
+        "name",
+        "type",
+        "iso_code",
+        "source",
+        "created_at"
+      ],
+      "where": "",
+      "order_by": "zone_id ASC",
+      "limit": 0
+    },
+    {
+      "name": "user",
+      "columns": [
+        "user_id",
+        "email",
+        "password",
+        "type",
+        "status",
+        "role",
+        "last_name",
+        "first_name",
+        "url_image",
+        "date_of_birth",
+        "gender"
+      ],
+      "where": "1=0",
+      "order_by": "",
+      "limit": 0
+    }
+  ]
+}

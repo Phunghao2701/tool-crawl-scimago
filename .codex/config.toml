@@ -1,0 +1,22 @@
+[mcp_servers.repo_harness]
+command = "repo-harness"
+args = [
+  "mcp",
+  "serve",
+  "--repo",
+  ".",
+  "--transport",
+  "stdio",
+  "--profile",
+  "executor"
+]
+enabled_tools = [
+  "harness_status",
+  "read_workflow_file",
+  "latest_handoff",
+  "latest_checks",
+  "prepare_codex_goal_from_sprint",
+  "write_codex_goal",
+  "run_workflow_check"
+]
+default_tools_approval_mode = "prompt"

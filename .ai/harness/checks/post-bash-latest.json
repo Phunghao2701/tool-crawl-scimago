@@ -1,0 +1,17 @@
+{
+  "source": "post-bash",
+  "command": "git -C \"E:/tool-crawl-scimago/scratch/papervn_worktree\" log --oneline --all -- data/local_dump_data.sql",
+  "exit_code": 0,
+  "status": "pass",
+  "broad_command": false,
+  "output_line_count": 0,
+  "verbosity_class": "inline",
+  "suggested_runner": "inline",
+  "raw_output_path": null,
+  "raw_output_bytes": 0,
+  "raw_output_sha256": null,
+  "failure_signal": false,
+  "rtk_available": false,
+  "recommended_next_tool": "",
+  "generated_at": "2026-07-03T11:16:09+0700"
+}
