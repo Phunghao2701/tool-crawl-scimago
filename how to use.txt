@@ -1,9 +1,0 @@
-export:
-python tools/export_custom_sql.py --config data/export_config.json --output data/custom_export.sql
-
-
-import:
-python tools/export_custom_sql.py --config data/export_config.json --output data/custom_export.sql --import-to-supabase
-
-merge:
-python tools/merge_reference_dois.py --limit 500 
