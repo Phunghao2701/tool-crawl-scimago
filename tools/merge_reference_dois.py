@@ -21,6 +21,8 @@ import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+from pipeline_lock import acquire as acquire_lock
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
@@ -65,7 +67,11 @@ def chunk_list(lst, n):
         yield lst[i:i + n]
 
 
-def get_dois_from_openalex(session: requests.Session, openalex_urls: list) -> Set[str]:
+def get_dois_from_openalex(session: requests.Session, openalex_urls: list, cache: dict) -> Set[str]:
+    """cache maps oa_id -> normalized DOI (or None if the work has no DOI).
+    Citation graphs are highly overlapping (the same landmark papers get
+    referenced by thousands of articles), so caching across the whole run
+    collapses what would otherwise be redundant repeat API lookups."""
     # Extract IDs: "https://openalex.org/W12345" -> "W12345"
     oa_ids = []
     for url in openalex_urls:
@@ -73,13 +79,21 @@ def get_dois_from_openalex(session: requests.Session, openalex_urls: list) -> Se
             parts = url.split("/")
             if parts:
                 oa_ids.append(parts[-1])
-    
+
     if not oa_ids:
         return set()
 
     dois = set()
+    uncached = []
+    for oa_id in oa_ids:
+        if oa_id in cache:
+            if cache[oa_id]:
+                dois.add(cache[oa_id])
+        else:
+            uncached.append(oa_id)
+
     # OpenAlex allows up to 50 items in a filter separated by |
-    for chunk in chunk_list(oa_ids, 50):
+    for chunk in chunk_list(uncached, 50):
         filter_str = "openalex:" + "|".join(chunk)
         url = "https://api.openalex.org/works"
         params = {
@@ -90,20 +104,31 @@ def get_dois_from_openalex(session: requests.Session, openalex_urls: list) -> Se
         }
         if OPENALEX_API_KEY:
             params["api_key"] = OPENALEX_API_KEY
-            
+
+        found_ids = set()
         try:
             resp = session.get(url, params=params, timeout=30)
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
                 for work in results:
+                    wid = (work.get("id") or "").split("/")[-1]
                     norm = normalize_doi(work.get("doi"))
+                    if wid:
+                        cache[wid] = norm
+                        found_ids.add(wid)
                     if norm:
                         dois.add(norm)
             time.sleep(REQUEST_INTERVAL)
         except Exception as e:
             print(f"    [WARN] OpenAlex DOI resolution failed for chunk: {e}")
             time.sleep(REQUEST_INTERVAL)
-            
+
+        # Anything in this chunk that OpenAlex didn't return has no DOI (or is
+        # deleted/missing) - cache that too so we don't keep re-requesting it.
+        for oa_id in chunk:
+            if oa_id not in found_ids:
+                cache[oa_id] = None
+
     return dois
 
 
@@ -137,6 +162,8 @@ def process_merges(limit: int, article_id: Optional[int] = None):
         "total_dois_extracted": 0,
     }
 
+    oa_id_to_doi_cache: dict = {}
+
     for idx, row in enumerate(rows, start=1):
         article_id, refs = row
         stats["processed"] += 1
@@ -146,7 +173,7 @@ def process_merges(limit: int, article_id: Optional[int] = None):
         # Resolve any OpenAlex work IDs to DOI values. Existing DOI strings are preserved.
         direct_dois = {normalize_doi(x) for x in refs_list if isinstance(x, str) and "10." in x.lower()}
         direct_dois.discard(None)
-        oa_dois = get_dois_from_openalex(session, refs_list)
+        oa_dois = get_dois_from_openalex(session, refs_list, oa_id_to_doi_cache)
 
         # Merge
         merged = direct_dois.union(oa_dois)
@@ -183,6 +210,7 @@ def main():
     parser.add_argument("--limit", type=int, default=100, help="Max articles to process; 0 means all")
     parser.add_argument("--article-id", type=int, default=None, help="Process one specific Article.article_id")
     args = parser.parse_args()
+    acquire_lock("merge_reference_dois")
     process_merges(args.limit, args.article_id)
 
 

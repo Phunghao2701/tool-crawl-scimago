@@ -1,0 +1,36 @@
+{
+  "app": {
+    "name": "research-graph-sync",
+    "version": "1.0.0",
+    "description": "Synchronize research data from PostgreSQL to Neo4j",
+    "environment": "production"
+  },
+  "database": {
+    "postgres": {
+      "connection_timeout": 10,
+      "pool_size": 20,
+      "max_overflow": 40,
+      "pool_recycle": 3600
+    },
+    "neo4j": {
+      "connection_timeout": 10,
+      "pool_size": 50,
+      "max_lifetime": 3600
+    }
+  },
+  "sync": {
+    "batch_size": 1000,
+    "timeout": 300,
+    "retry_attempts": 3,
+    "retry_delay": 5,
+    "full_sync_schedule": "0 2 * * *",
+    "incremental_sync_schedule": "*/30 * * * *"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "output": "logs",
+    "max_bytes": 10485760,
+    "backup_count": 10
+  }
+}

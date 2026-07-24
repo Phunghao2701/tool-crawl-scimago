@@ -84,6 +84,9 @@ python tools/migrate_local_to_vercel.py
 
 # Full Reset (nguy hiểm): xóa hết Vercel rồi copy lại từ đầu
 python tools/migrate_local_to_vercel.py --reset
+
+# Non-interactive (cho automation / agent, ví dụ Javis): bỏ qua menu chọn phạm vi và câu hỏi xác nhận
+python tools/migrate_local_to_vercel.py --profile 3 --yes   # 1=Journals, 2=+Articles, 3=Full
 ```
 
 ### So sánh 2 chế độ

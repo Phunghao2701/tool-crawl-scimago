@@ -25,6 +25,8 @@ import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+from pipeline_lock import acquire as acquire_lock
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
@@ -54,12 +56,85 @@ def fetch_openalex_work(session: requests.Session, doi: str) -> tuple[int, Optio
     if OPENALEX_API_KEY:
         params["api_key"] = OPENALEX_API_KEY
 
-    resp = session.get(url, params=params, timeout=30)
-    if resp.status_code == 200:
-        return 200, resp.json(), "ok"
-    if resp.status_code == 404:
-        return 404, None, "not_found"
-    return resp.status_code, None, resp.text[:500]
+    # (connect_timeout, read_timeout) tuple + retry: a plain single-value timeout
+    # has occasionally not fired on this machine, leaving requests hanging well
+    # past 30s with no error. Retry a couple of times before giving up on this DOI.
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = session.get(url, params=params, timeout=(10, 30))
+            if resp.status_code == 200:
+                return 200, resp.json(), "ok"
+            if resp.status_code == 404:
+                return 404, None, "not_found"
+            if resp.status_code == 429:
+                time.sleep(5 * (attempt + 1))
+                continue
+            return resp.status_code, None, resp.text[:500]
+        except requests.RequestException as e:
+            last_exc = e
+            time.sleep(3 * (attempt + 1))
+    return 599, None, f"request_failed: {last_exc}"
+
+
+BATCH_MAX = 50
+
+
+def fetch_works_batch(session: requests.Session, dois: list[str]) -> tuple[int, Optional[dict], str]:
+    """Fetch up to BATCH_MAX works by DOI in a single request (OpenAlex supports
+    filter=doi:a|b|c, same pattern already used by sync_authors for openalex_id/orcid).
+    Returns a dict keyed by normalized DOI -> work (only entries that were found)."""
+    filter_str = "|".join(dois)
+    params = {
+        "filter": f"doi:{filter_str}",
+        "per_page": len(dois),
+        "mailto": OPENALEX_EMAIL,
+    }
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
+
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = session.get("https://api.openalex.org/works", params=params, timeout=(10, 30))
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                doi_map = {}
+                for w in results:
+                    wdoi = w.get("doi")
+                    if wdoi:
+                        doi_map[normalize_doi(wdoi).lower()] = w
+                return 200, doi_map, "ok"
+            if resp.status_code == 429:
+                time.sleep(5 * (attempt + 1))
+                continue
+            return resp.status_code, None, resp.text[:500]
+        except requests.RequestException as e:
+            last_exc = e
+            time.sleep(3 * (attempt + 1))
+    return 599, None, f"request_failed: {last_exc}"
+
+
+def apply_work(engine, article_id: int, work: dict):
+    refs = work.get("referenced_works") or []
+    ref_count = work.get("referenced_works_count")
+    if ref_count is None:
+        ref_count = len(refs)
+
+    with engine.begin() as conn:
+        conn.execute(text('''
+            UPDATE "Article"
+            SET "references" = CAST(:references_json AS JSONB),
+                reference_count = :reference_count,
+                citation_count = COALESCE(:cited_by_count, citation_count)
+            WHERE article_id = :article_id
+        '''), {
+            "article_id": article_id,
+            "references_json": json.dumps(refs, ensure_ascii=False),
+            "reference_count": ref_count,
+            "cited_by_count": work.get("cited_by_count"),
+        })
+    return len(refs)
 
 
 def select_target_articles(conn, limit: int, min_year: Optional[int]):
@@ -105,59 +180,80 @@ def backfill_openalex_references(limit: int, min_year: Optional[int]):
     min_year_msg = f" publication_year>={min_year}" if min_year else ""
     print(f"Found {len(rows)} article(s) needing OpenAlex reference backfill{min_year_msg}.")
 
-    for idx, row in enumerate(rows, start=1):
-        article_id, title, raw_doi = row
+    # (article_id, doi) for rows with a usable DOI; rest are skipped up front.
+    targets = []
+    for article_id, title, raw_doi in rows:
         doi = normalize_doi(raw_doi)
         if not doi:
             stats["skipped_no_doi"] += 1
             continue
+        targets.append((article_id, doi))
 
+    fallback: list[tuple[int, str]] = []
+
+    # ─── Fast path: batch-fetch up to BATCH_MAX works/request by DOI ───────────
+    idx = 0
+    for i in range(0, len(targets), BATCH_MAX):
+        chunk = targets[i:i + BATCH_MAX]
+        dois = [c[1] for c in chunk]
+        status, doi_map, reason = fetch_works_batch(session, dois)
+        time.sleep(REQUEST_INTERVAL)
+
+        if status != 200 or doi_map is None:
+            print(f"[batch] ERROR fetching {len(chunk)} DOIs: status={status} reason={reason}")
+            fallback.extend(chunk)
+            continue
+
+        for article_id, doi in chunk:
+            idx += 1
+            work = doi_map.get(doi.lower())
+            if not work:
+                fallback.append((article_id, doi))
+                continue
+            try:
+                refs_len = apply_work(engine, article_id, work)
+                stats["processed"] += 1
+                if refs_len:
+                    stats["updated_with_refs"] += 1
+                    print(f"[batch {idx}] UPDATED article_id={article_id} refs={refs_len} doi={doi}")
+                else:
+                    stats["updated_empty_refs"] += 1
+                    print(f"[batch {idx}] UPDATED EMPTY article_id={article_id} refs=0 doi={doi}")
+            except Exception as exc:
+                stats["processed"] += 1
+                stats["errors"] += 1
+                print(f"[batch {idx}] ERROR applying article_id={article_id} doi={doi}: {exc}")
+
+    # ─── Slow path: per-DOI lookup for whatever the batch missed ───────────────
+    for idx, (article_id, doi) in enumerate(fallback, start=1):
         try:
             status, work, reason = fetch_openalex_work(session, doi)
             stats["processed"] += 1
             if status != 200 or not work:
                 if reason == "not_found":
                     stats["not_found"] += 1
-                    print(f"[{idx}] NOT FOUND article_id={article_id} doi={doi}")
+                    print(f"[single {idx}] NOT FOUND article_id={article_id} doi={doi}")
                 else:
                     stats["errors"] += 1
-                    print(f"[{idx}] ERROR article_id={article_id} status={status} reason={reason}")
+                    print(f"[single {idx}] ERROR article_id={article_id} status={status} reason={reason}")
                 time.sleep(REQUEST_INTERVAL)
                 continue
 
-            refs = work.get("referenced_works") or []
-            ref_count = work.get("referenced_works_count")
-            if ref_count is None:
-                ref_count = len(refs)
-
-            with engine.begin() as conn:
-                conn.execute(text('''
-                    UPDATE "Article"
-                    SET "references" = CAST(:references_json AS JSONB),
-                        reference_count = :reference_count,
-                        citation_count = COALESCE(:cited_by_count, citation_count)
-                    WHERE article_id = :article_id
-                '''), {
-                    "article_id": article_id,
-                    "references_json": json.dumps(refs, ensure_ascii=False),
-                    "reference_count": ref_count,
-                    "cited_by_count": work.get("cited_by_count"),
-                })
-
-            if refs:
+            refs_len = apply_work(engine, article_id, work)
+            if refs_len:
                 stats["updated_with_refs"] += 1
-                print(f"[{idx}] UPDATED article_id={article_id} refs={len(refs)} doi={doi}")
+                print(f"[single {idx}] UPDATED article_id={article_id} refs={refs_len} doi={doi}")
             else:
                 stats["updated_empty_refs"] += 1
-                print(f"[{idx}] UPDATED EMPTY article_id={article_id} refs=0 doi={doi}")
+                print(f"[single {idx}] UPDATED EMPTY article_id={article_id} refs=0 doi={doi}")
         except requests.RequestException as exc:
             stats["processed"] += 1
             stats["errors"] += 1
-            print(f"[{idx}] REQUEST ERROR article_id={article_id} doi={doi}: {exc}")
+            print(f"[single {idx}] REQUEST ERROR article_id={article_id} doi={doi}: {exc}")
         except Exception as exc:
             stats["processed"] += 1
             stats["errors"] += 1
-            print(f"[{idx}] ERROR article_id={article_id} doi={doi}: {exc}")
+            print(f"[single {idx}] ERROR article_id={article_id} doi={doi}: {exc}")
         finally:
             time.sleep(REQUEST_INTERVAL)
 
@@ -171,6 +267,7 @@ def main():
     parser.add_argument("--limit", type=int, default=100, help="Max articles to process; 0 means all")
     parser.add_argument("--min-year", type=int, default=None, help="Only process articles from this publication year onward")
     args = parser.parse_args()
+    acquire_lock("openalex_reference_backfill")
     backfill_openalex_references(args.limit, args.min_year)
 
 

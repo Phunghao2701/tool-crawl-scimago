@@ -1,0 +1,1181 @@
+[
+  {
+    "input_name": "Vietnam Journal of Computer Science",
+    "owner": "Nguyen Tat Thanh University",
+    "priority": "A_direct_ict",
+    "best_display_name": "Vietnam Journal of Computer Science",
+    "best_issn_l": "2196-8888",
+    "best_issn_list": "2196-8888;2196-8896",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S2486636169",
+    "homepage_url": "https://www.worldscientific.com/worldscinet/vjcs",
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "Vietnam Journal of Computer Science",
+        "issn_l": "2196-8888",
+        "issn_list": [
+          "2196-8888",
+          "2196-8896"
+        ],
+        "publisher_or_owner": "World Scientific",
+        "openalex_id": "https://openalex.org/S2486636169",
+        "homepage_url": "https://www.worldscientific.com/worldscinet/vjcs",
+        "works_count": 353,
+        "cited_by_count": 3112,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Vietnam Journal of Computer Science",
+        "issn_l": "2196-8888",
+        "issn_list": [
+          "2196-8888",
+          "2196-8896"
+        ],
+        "publisher_or_owner": "Springer Science and Business Media LLC",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "Journal of Information and Telecommunication",
+    "owner": "Ton Duc Thang University",
+    "priority": "A_direct_ict",
+    "best_display_name": "Journal of Information and Telecommunication",
+    "best_issn_l": "2475-1839",
+    "best_issn_list": "2475-1839;2475-1847",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210226961",
+    "homepage_url": "https://www.tandfonline.com/toc/tjit20/current",
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information and Telecommunication",
+        "issn_l": "2475-1839",
+        "issn_list": [
+          "2475-1839",
+          "2475-1847"
+        ],
+        "publisher_or_owner": "Taylor & Francis",
+        "openalex_id": "https://openalex.org/S4210226961",
+        "homepage_url": "https://www.tandfonline.com/toc/tjit20/current",
+        "works_count": 298,
+        "cited_by_count": 3348,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information Systems and Telecommunication (JIST)",
+        "issn_l": "2322-1437",
+        "issn_list": [
+          "2322-1437",
+          "2345-2773"
+        ],
+        "publisher_or_owner": "The Academic Center for Education, Culture and Research",
+        "openalex_id": "https://openalex.org/S4210171124",
+        "homepage_url": "http://www.jist.ir",
+        "works_count": 106,
+        "cited_by_count": 315,
+        "raw_score": 0.9213,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information Systems and Telecommunication (JIST)",
+        "issn_l": "0469-6417",
+        "issn_list": [
+          "0469-6417"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4389158085",
+        "homepage_url": null,
+        "works_count": 51,
+        "cited_by_count": 61,
+        "raw_score": 0.9213,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information Systems and Telecommunication (JIST)",
+        "issn_l": "2077-4974",
+        "issn_list": [
+          "2077-4974"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S5407051474",
+        "homepage_url": null,
+        "works_count": 14,
+        "cited_by_count": 3,
+        "raw_score": 0.9213,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information Systems and Telecommunication (JIST)",
+        "issn_l": "1687-1227",
+        "issn_list": [
+          "1687-1227"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S7407057840",
+        "homepage_url": null,
+        "works_count": 13,
+        "cited_by_count": 0,
+        "raw_score": 0.9213,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Information Systems and Telecommunication (JIST)",
+        "issn_l": null,
+        "issn_list": [],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4306515657",
+        "homepage_url": null,
+        "works_count": 0,
+        "cited_by_count": 0,
+        "raw_score": 0.8713,
+        "confidence": "low",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Information and Telecommunication Sciences",
+        "issn_l": "2411-2976",
+        "issn_list": [
+          "2411-2976",
+          "2312-4121"
+        ],
+        "publisher_or_owner": "Kyiv Politechnic Institute",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.8174,
+        "confidence": "medium",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Journal of Computer Science Information Technology and Telecommunication Engineering",
+        "issn_l": "2721-3838",
+        "issn_list": [
+          "2721-3838"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210235749",
+        "homepage_url": null,
+        "works_count": 115,
+        "cited_by_count": 323,
+        "raw_score": 0.7375,
+        "confidence": "low",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Telecommunication and information technologies",
+        "issn_l": "2412-4338",
+        "issn_list": [
+          "2412-4338"
+        ],
+        "publisher_or_owner": "State University of Information and Communication Technologies",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.4778,
+        "confidence": "manual_review",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "Journal of Computer Science and Cybernetics",
+    "owner": "Vietnam Academy of Science and Technology",
+    "priority": "A_direct_ict",
+    "best_display_name": "Journal of Computer Science and Cybernetics",
+    "best_issn_l": "1813-9663",
+    "best_issn_list": "1813-9663;2815-5939",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S2764365271",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "Journal of Computer Science and Cybernetics",
+        "issn_l": "1813-9663",
+        "issn_list": [
+          "1813-9663",
+          "2815-5939"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S2764365271",
+        "homepage_url": null,
+        "works_count": 1285,
+        "cited_by_count": 1610,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Journal of Computer Science and Cybernetics",
+        "issn_l": "1813-9663",
+        "issn_list": [
+          "1813-9663"
+        ],
+        "publisher_or_owner": "Publishing House for Science and Technology, Vietnam Academy of Science and Technology (Publications)",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Computer Science",
+        "issn_l": "2300-7036",
+        "issn_list": [
+          "2300-7036",
+          "1508-2806"
+        ],
+        "publisher_or_owner": "AGHU University of Science and Technology Press",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Computer Science",
+        "issn_l": "1508-2806",
+        "issn_list": [
+          "1508-2806"
+        ],
+        "publisher_or_owner": "AGHU University of Science and Technology Press",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Computer Science",
+        "issn_l": "2548-1304",
+        "issn_list": [
+          "2548-1304"
+        ],
+        "publisher_or_owner": "Anatolian Science - Bilgisayar Bilimleri Dergisi",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.995,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học Điều dưỡng",
+        "issn_l": "2734-9632",
+        "issn_list": [
+          "2734-9632",
+          "2615-9589"
+        ],
+        "publisher_or_owner": "Nam Dinh University of Nursing",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.5115,
+        "confidence": "manual_review",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "Journal on Information Technologies and Communications",
+    "owner": "Ministry of Science and Technology",
+    "priority": "A_direct_ict",
+    "best_display_name": "Journal on Information Technologies & Communications",
+    "best_issn_l": "1859-3526",
+    "best_issn_list": "1859-3526",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210189557",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "Journal on Information Technologies & Communications",
+        "issn_l": "1859-3526",
+        "issn_list": [
+          "1859-3526"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210189557",
+        "homepage_url": null,
+        "works_count": 209,
+        "cited_by_count": 35,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Journal on Information Technologies &amp; Communications",
+        "issn_l": "1859-3526",
+        "issn_list": [
+          "1859-3526"
+        ],
+        "publisher_or_owner": "Ministry of Science and Technology, Vietnam (VMOST)",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Các công trình nghiên cứu, phát triển và ứng dụng Công nghệ Thông tin và Truyền thông",
+        "issn_l": "1859-3526",
+        "issn_list": [
+          "1859-3526"
+        ],
+        "publisher_or_owner": "Ministry of Science and Technology, Vietnam (VMOST)",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "EAI Endorsed Transactions on Industrial Networks and Intelligent Systems",
+    "owner": "Duy Tan University",
+    "priority": "A_direct_ict",
+    "best_display_name": "EAI Endorsed Transactions on Industrial Networks and Intelligent Systems",
+    "best_issn_l": "2410-0218",
+    "best_issn_list": "2410-0218",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210209442",
+    "homepage_url": "https://eudl.eu/journal/inis",
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "EAI Endorsed Transactions on Industrial Networks and Intelligent Systems",
+        "issn_l": "2410-0218",
+        "issn_list": [
+          "2410-0218"
+        ],
+        "publisher_or_owner": "European Alliance for Innovation",
+        "openalex_id": "https://openalex.org/S4210209442",
+        "homepage_url": "https://eudl.eu/journal/inis",
+        "works_count": 239,
+        "cited_by_count": 1564,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "EAI Endorsed Transactions on Industrial Networks and Intelligent Systems",
+        "issn_l": "2410-0218",
+        "issn_list": [
+          "2410-0218"
+        ],
+        "publisher_or_owner": "European Alliance for Innovation n.o.",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Intelligent Industrial Systems",
+        "issn_l": "2363-6912",
+        "issn_list": [
+          "2363-6912",
+          "2199-854X"
+        ],
+        "publisher_or_owner": "Springer Science and Business Media LLC",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.5705,
+        "confidence": "manual_review",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "REV Journal on Electronics and Communications",
+    "owner": "Radio and Electronics Association of Vietnam",
+    "priority": "A_near_ict",
+    "best_display_name": "REV Journal on Electronics and Communications",
+    "best_issn_l": "1859-378X",
+    "best_issn_list": "1859-378X",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210205660",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "REV Journal on Electronics and Communications",
+        "issn_l": "1859-378X",
+        "issn_list": [
+          "1859-378X"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210205660",
+        "homepage_url": null,
+        "works_count": 188,
+        "cited_by_count": 523,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "REV Journal on Electronics and Communications",
+        "issn_l": "1859-378X",
+        "issn_list": [
+          "1859-378X"
+        ],
+        "publisher_or_owner": "The Radio and Electronics Association of Vietnam (REV)",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "VNU Journal of Science: Computer Science and Communication Engineering",
+    "owner": "Vietnam National University, Hanoi",
+    "priority": "B_section_ict",
+    "best_display_name": "VNU Journal of Science Computer Science and Communication Engineering",
+    "best_issn_l": "2588-1086",
+    "best_issn_list": "2588-1086;2615-9260",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210201228",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "VNU Journal of Science Computer Science and Communication Engineering",
+        "issn_l": "2588-1086",
+        "issn_list": [
+          "2588-1086",
+          "2615-9260"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210201228",
+        "homepage_url": null,
+        "works_count": 145,
+        "cited_by_count": 205,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "VNU Journal of Science: Computer Science and Communication Engineering",
+        "issn_l": "2588-1086",
+        "issn_list": [
+          "2588-1086",
+          "2615-9260"
+        ],
+        "publisher_or_owner": "Vietnam National University Journal of Science",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "VNU Journal of Science: Computer Science and Communication Engineering",
+        "issn_l": "2588-1086",
+        "issn_list": [
+          "2588-1086"
+        ],
+        "publisher_or_owner": "Vietnam National University Journal of Science",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ Trường Đại học Khoa học",
+        "issn_l": "2354-0850",
+        "issn_list": [
+          "2354-0850"
+        ],
+        "publisher_or_owner": "University of Sciences, Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.6641,
+        "confidence": "low",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ Trường Đại học Khoa học",
+        "issn_l": "2354-0842",
+        "issn_list": [
+          "2354-0842"
+        ],
+        "publisher_or_owner": "University of Sciences, Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.6641,
+        "confidence": "low",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "TNU Journal of Science and Technology",
+    "owner": "Thai Nguyen University",
+    "priority": "B_section_ict",
+    "best_display_name": "TNU Journal of Science and Technology",
+    "best_issn_l": "1859-2171",
+    "best_issn_list": "1859-2171;2615-9562;2734-9098",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210180384",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "TNU Journal of Science and Technology",
+        "issn_l": "1859-2171",
+        "issn_list": [
+          "1859-2171",
+          "2615-9562",
+          "2734-9098"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210180384",
+        "homepage_url": null,
+        "works_count": 3979,
+        "cited_by_count": 615,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "TNU Journal of Science and Technology",
+        "issn_l": "2615-9562",
+        "issn_list": [
+          "2615-9562",
+          "2734-9098"
+        ],
+        "publisher_or_owner": "Thai Nguyen University - Journal of Science and Technology",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ - Đại học Thái Nguyên",
+        "issn_l": "2615-9562",
+        "issn_list": [
+          "2615-9562",
+          "1859-2171"
+        ],
+        "publisher_or_owner": "Thai Nguyen University - Journal of Science and Technology",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ - Đại học Thái Nguyên",
+        "issn_l": "2615-9562",
+        "issn_list": [
+          "2615-9562",
+          "2734-9098"
+        ],
+        "publisher_or_owner": "Thai Nguyen University - Journal of Science and Technology",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Các công trình nghiên cứu, phát triển và ứng dụng Công nghệ Thông tin và Truyền thông",
+        "issn_l": "1859-3526",
+        "issn_list": [
+          "1859-3526"
+        ],
+        "publisher_or_owner": "Ministry of Science and Technology, Vietnam (VMOST)",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.97,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Research and Development on Information and Communication Technology",
+        "issn_l": "1859-3534",
+        "issn_list": [
+          "1859-3534"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210237992",
+        "homepage_url": null,
+        "works_count": 204,
+        "cited_by_count": 158,
+        "raw_score": 0.4189,
+        "confidence": "manual_review",
+        "notes": "OpenAlex source search candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "Hue University Journal of Science: Techniques and Technology",
+    "owner": "Hue University",
+    "priority": "C_broad_filter_article",
+    "best_display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE TECHNIQUES AND TECHNOLOGY",
+    "best_issn_l": "2588-1175",
+    "best_issn_list": "2588-1175;2615-9732",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210237149",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE TECHNIQUES AND TECHNOLOGY",
+        "issn_l": "2588-1175",
+        "issn_list": [
+          "2588-1175",
+          "2615-9732"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210237149",
+        "homepage_url": null,
+        "works_count": 137,
+        "cited_by_count": 15,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE ECONOMICS AND DEVELOPMENT",
+        "issn_l": "2588-1191",
+        "issn_list": [
+          "2588-1191",
+          "2588-1205",
+          "2615-9708",
+          "2615-9716"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S2764545194",
+        "homepage_url": null,
+        "works_count": 1319,
+        "cited_by_count": 428,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE NATURAL SCIENCE",
+        "issn_l": "1859-1388",
+        "issn_list": [
+          "1859-1388",
+          "2615-9678"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210194977",
+        "homepage_url": "http://jos.hueuni.edu.vn/index.php/HUJOS-NS/index",
+        "works_count": 642,
+        "cited_by_count": 251,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE SOCIAL SCIENCES AND HUMANITIES",
+        "issn_l": "2588-1213",
+        "issn_list": [
+          "2588-1213",
+          "2615-9724"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210232880",
+        "homepage_url": null,
+        "works_count": 533,
+        "cited_by_count": 104,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "HUE UNIVERSITY JOURNAL OF SCIENCE EARTH SCIENCE AND ENVIRONMENT",
+        "issn_l": "2588-1183",
+        "issn_list": [
+          "2588-1183",
+          "2615-9694"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210199259",
+        "homepage_url": null,
+        "works_count": 90,
+        "cited_by_count": 25,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Hue University Journal of Science",
+        "issn_l": null,
+        "issn_list": [],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S2764961258",
+        "homepage_url": null,
+        "works_count": 24,
+        "cited_by_count": 0,
+        "raw_score": 1.0,
+        "confidence": "low",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Hue University Journal of Science: Techniques and Technology",
+        "issn_l": "2615-9732",
+        "issn_list": [
+          "2615-9732",
+          "2588-1175"
+        ],
+        "publisher_or_owner": "Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Hue University Journal of Science: Techniques and Technology",
+        "issn_l": "2588-1175",
+        "issn_list": [
+          "2588-1175"
+        ],
+        "publisher_or_owner": "Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Hue University Journal of Science: Natural Science",
+        "issn_l": "2615-9678",
+        "issn_list": [
+          "2615-9678",
+          "1859-1388"
+        ],
+        "publisher_or_owner": "Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ Trường Đại học Khoa học",
+        "issn_l": "2354-0850",
+        "issn_list": [
+          "2354-0850"
+        ],
+        "publisher_or_owner": "University of Sciences, Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.7131,
+        "confidence": "low",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "The University of Danang Journal of Science and Technology",
+    "owner": "The University of Danang",
+    "priority": "C_broad_filter_article",
+    "best_display_name": "The University of Danang - Journal of Science and Technology",
+    "best_issn_l": "1859-1531",
+    "best_issn_list": "1859-1531",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210230054",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "The University of Danang - Journal of Science and Technology",
+        "issn_l": "1859-1531",
+        "issn_list": [
+          "1859-1531"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210230054",
+        "homepage_url": null,
+        "works_count": 980,
+        "cited_by_count": 355,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "The University of Danang - Journal of Science and Technology",
+        "issn_l": "1859-1531",
+        "issn_list": [
+          "1859-1531"
+        ],
+        "publisher_or_owner": "The University of Danang",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ Trường Đại học Khoa học",
+        "issn_l": "2354-0850",
+        "issn_list": [
+          "2354-0850"
+        ],
+        "publisher_or_owner": "University of Sciences, Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.8959,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học và Công nghệ Trường Đại học Khoa học",
+        "issn_l": "2354-0842",
+        "issn_list": [
+          "2354-0842"
+        ],
+        "publisher_or_owner": "University of Sciences, Hue University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.8959,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "UD y la GEOMÁTICA",
+        "issn_l": "2344-8407",
+        "issn_list": [
+          "2344-8407",
+          "2011-4990"
+        ],
+        "publisher_or_owner": "Universidad Distrital Francisco Jose de Caldas",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.2387,
+        "confidence": "manual_review",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  },
+  {
+    "input_name": "Can Tho University Journal of Science",
+    "owner": "Can Tho University",
+    "priority": "C_broad_filter_article",
+    "best_display_name": "Can Tho University Journal of Science",
+    "best_issn_l": "1859-2333",
+    "best_issn_list": "1859-2333;2815-5599",
+    "best_source": "openalex",
+    "confidence": "high",
+    "score": 1.0,
+    "openalex_id": "https://openalex.org/S4210169719",
+    "homepage_url": null,
+    "notes": "Candidate found. Still verify against official journal website before database import.",
+    "candidates": [
+      {
+        "source": "openalex",
+        "display_name": "Can Tho University Journal of Science",
+        "issn_l": "1859-2333",
+        "issn_list": [
+          "1859-2333",
+          "2815-5599"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210169719",
+        "homepage_url": null,
+        "works_count": 3101,
+        "cited_by_count": 2373,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Can Tho University Journal of Science",
+        "issn_l": "2615-9422",
+        "issn_list": [
+          "2615-9422",
+          "2815-5602"
+        ],
+        "publisher_or_owner": null,
+        "openalex_id": "https://openalex.org/S4210196681",
+        "homepage_url": null,
+        "works_count": 164,
+        "cited_by_count": 375,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "Can Tho University, Journal of Science",
+        "issn_l": null,
+        "issn_list": [],
+        "publisher_or_owner": "Can Tho University",
+        "openalex_id": "https://openalex.org/S2764687687",
+        "homepage_url": null,
+        "works_count": 0,
+        "cited_by_count": 0,
+        "raw_score": 1.0,
+        "confidence": "low",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "openalex",
+        "display_name": "CTU Journal of Innovation and Sustainable Development",
+        "issn_l": "2588-1418",
+        "issn_list": [
+          "2588-1418",
+          "2815-6412"
+        ],
+        "publisher_or_owner": "Can Tho University",
+        "openalex_id": "https://openalex.org/S4387292127",
+        "homepage_url": null,
+        "works_count": 215,
+        "cited_by_count": 201,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "OpenAlex source search candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Can Tho University Journal of Science",
+        "issn_l": "1859-2333",
+        "issn_list": [
+          "1859-2333"
+        ],
+        "publisher_or_owner": "Can Tho University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "CTU Journal of Science",
+        "issn_l": "2815-5599",
+        "issn_list": [
+          "2815-5599",
+          "1859-2333"
+        ],
+        "publisher_or_owner": "Can Tho University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học Trường Đại học Trưng Vương",
+        "issn_l": "3093-3560",
+        "issn_list": [
+          "3093-3560",
+          "3093-3412"
+        ],
+        "publisher_or_owner": "Trung Vuong University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "CTU Journal of Innovation and Sustainable Development",
+        "issn_l": "2815-6412",
+        "issn_list": [
+          "2815-6412",
+          "2588-1418"
+        ],
+        "publisher_or_owner": "Can Tho University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 1.0,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học Trường Đại học Hồng Đức",
+        "issn_l": "3030-4741",
+        "issn_list": [
+          "3030-4741",
+          "3030-4725"
+        ],
+        "publisher_or_owner": "Hong Duc University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.9854,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      },
+      {
+        "source": "crossref",
+        "display_name": "Tạp chí Khoa học Trường Đại học Hồng Đức",
+        "issn_l": "1859-2759",
+        "issn_list": [
+          "1859-2759"
+        ],
+        "publisher_or_owner": "Hong Duc University",
+        "openalex_id": null,
+        "homepage_url": null,
+        "works_count": null,
+        "cited_by_count": null,
+        "raw_score": 0.9854,
+        "confidence": "high",
+        "notes": "Crossref work container-title candidate"
+      }
+    ]
+  }
+]

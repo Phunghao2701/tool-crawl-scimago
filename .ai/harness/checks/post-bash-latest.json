@@ -1,6 +1,6 @@
 {
   "source": "post-bash",
-  "command": "git -C \"E:/tool-crawl-scimago/scratch/papervn_worktree\" log --oneline --all -- data/local_dump_data.sql",
+  "command": "tail -c 400 e:/tool-crawl-scimago/logs/migrate_resume_20260718_004455.log\necho \"---lock---\"\nls e:/tool-crawl-scimago/logs/.migrate_local_to_vercel.lock 2>&1",
   "exit_code": 0,
   "status": "pass",
   "broad_command": false,
@@ -13,5 +13,5 @@
   "failure_signal": false,
   "rtk_available": false,
   "recommended_next_tool": "",
-  "generated_at": "2026-07-03T11:16:09+0700"
+  "generated_at": "2026-07-18T01:36:11+0700"
 }

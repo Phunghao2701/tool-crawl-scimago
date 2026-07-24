@@ -15,6 +15,34 @@ chcp 65001 > nul
 title Scimago and OpenAlex ETL Pipeline Control Panel
 color 0B
 
+rem Non-interactive smoke test for the Neo4j menu option. This only prints
+rem the command and never connects to PostgreSQL or Neo4j.
+set "PIPELINE_DRY_RUN="
+set "PIPELINE_DRY_RUN_EXIT="
+if /I "%~1"=="--dry-run-neo4j" (
+    set "PIPELINE_DRY_RUN=1"
+    set "PIPELINE_DRY_RUN_EXIT=1"
+    set "neo4j_args=--type full --limit 100"
+    goto run_neo4j
+)
+set "PIPELINE_EMBED_DRY_RUN_EXIT="
+set "PIPELINE_EMBED_MENU_DRY_RUN_EXIT="
+if /I "%~1"=="--dry-run-embedding-menu" (
+    set "PIPELINE_EMBED_MENU_DRY_RUN_EXIT=1"
+    goto embed_db
+)
+if /I "%~1"=="--dry-run-embedding" (
+    set "PIPELINE_EMBED_DRY_RUN_EXIT=1"
+    set "embedding_is_dry_run=1"
+    set "embedding_args=--dimension 768 --limit 100 --dry-run"
+    goto run_embedding
+)
+set "PIPELINE_MEILI_DRY_RUN_EXIT="
+if /I "%~1"=="--dry-run-meilisearch" (
+    set "PIPELINE_MEILI_DRY_RUN_EXIT=1"
+    goto run_meilisearch
+)
+
 :menu
 cls
 
@@ -37,10 +65,16 @@ echo  6. Export Report: Xuat bao cao Excel va CSV
 echo  7. View Database Statistics: Xem so lieu thong ke trong database
 echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
 echo  M. Migrate Local -^> Vercel: Chuyen toan bo data tu Local len Vercel
+echo  N. Sync PostgreSQL -^> Neo4j: Dong bo knowledge graph
+echo  V. Embed Article Vectors: Tao vector embedding trong PostgreSQL
+echo  L. Sync PostgreSQL -^> Meilisearch: Dong bo search indexes
 echo  9. Exit: Thoat
 echo ====================================================================
-choice /c 1234567890ERM /n /m "Vui long chon chuc nang (1-9, 0, E, R, M): "
+choice /c 1234567890ERMNVL /n /m "Vui long chon chuc nang (1-9, 0, E, R, M, N, V, L): "
 echo [DEBUG] Lua chon nhan duoc: errorlevel=%errorlevel%
+if errorlevel 16 goto sync_meilisearch
+if errorlevel 15 goto embed_db
+if errorlevel 14 goto sync_neo4j
 if errorlevel 13 goto migrate_to_vercel
 if errorlevel 12 goto backfill_references
 if errorlevel 11 goto sync_semantic
@@ -276,7 +310,7 @@ for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do s
 echo DB hien tai: %CURRENT_DB_VAL%
 echo.
 echo  1. Dung LOCAL Docker (postgresql://localhost:5433)
-echo  2. Dung VERCEL Prisma (db.prisma.io)
+echo  2. Dung DB SAN XUAT (42.96.16.203 - cung DB voi Supabase da migrate)
 echo  3. Giu nguyen, quay lai menu
 echo.
 set /p db_choice="Chon (1/2/3): "
@@ -284,18 +318,19 @@ set /p db_choice="Chon (1/2/3): "
 if "%db_choice%"=="1" (
     echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
-    echo OPENALEX_API_KEY=QMpnNu39KD8pRteBiQzGqe>> .env
+    echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
     echo.
     echo [OK] Da chuyen sang LOCAL Docker DB!
     pause
     goto menu
 )
 if "%db_choice%"=="2" (
-    echo DATABASE_URL=postgresql+psycopg2://8b22d4c854c9d742f0eaa0da80bd1208bcd3c18cfe5d2667f7c06d7f38905f81:sk__9UjMxIRIGy7X2dRACsdc@db.prisma.io:5432/postgres?sslmode=require> .env
+    echo DATABASE_URL=postgresql+psycopg2://admin:SWP391%%40Team2026@42.96.16.203:5432/postgres> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
-    echo OPENALEX_API_KEY=QMpnNu39KD8pRteBiQzGqe>> .env
+    echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
     echo.
-    echo [OK] Da chuyen sang VERCEL DB!
+    echo [OK] Da chuyen sang DB SAN XUAT!
+    echo [CANH BAO] Ban dang crawl truc tiep vao DB that dang chay app. Neu muon an toan hon, dung Option 1 (Local) roi dung Option M de migrate sau.
     pause
     goto menu
 )
@@ -318,9 +353,13 @@ echo  2. FULL RESET: Xoa TOAN BO Vercel roi copy lai tu dau.
 echo     - NGUY HIEM: Toan bo data tren Vercel se bi mat!
 echo     - Dung khi muon dong bo lai hoan toan tu Local.
 echo.
-echo  3. Quay lai menu chinh.
+echo  3. Sync LEGACY Supabase (egyrzaqtmxmcezxchfrl) -^> DB san xuat.
+echo     - Chi dung neu can lay them du lieu con sot lai tren Supabase cu.
+echo     - An toan, chi copy nhung gi chua co (ON CONFLICT DO NOTHING).
 echo.
-set /p migrate_mode="Chon (1/2/3): "
+echo  4. Quay lai menu chinh.
+echo.
+set /p migrate_mode="Chon (1/2/3/4): "
 echo.
 
 if "%migrate_mode%"=="1" (
@@ -334,7 +373,12 @@ if "%migrate_mode%"=="2" (
     echo.
     python tools/migrate_local_to_vercel.py --reset
 )
-if "%migrate_mode%"=="3" goto menu
+if "%migrate_mode%"=="3" (
+    echo [INFO] Bat dau sync tu LEGACY Supabase...
+    echo.
+    python tools/migrate_legacy_supabase.py
+)
+if "%migrate_mode%"=="4" goto menu
 echo.
 pause
 goto menu
@@ -428,6 +472,382 @@ python tools/merge_reference_dois.py --limit %ref_limit%
 echo.
 echo [OK] Backfill references hoan tat!
 echo.
+pause
+goto menu
+
+:sync_neo4j
+cls
+echo ==========================================
+echo  N. SYNC POSTGRESQL -^> NEO4J
+echo ==========================================
+echo [INFO] Tool dung cau hinh rieng tai Tool-pg-to-neo4j\.env
+echo [INFO] PostgreSQL chi duoc doc; Neo4j se duoc tao/cap nhat graph.
+echo.
+echo  1. Sync mau co gioi han (khuyen dung de kiem tra)
+echo  2. Full sync tat ca du lieu
+echo  3. Dry-run 100 ban ghi (khong ket noi database)
+echo  4. Quay lai menu chinh
+echo.
+set "neo4j_mode="
+set /p neo4j_mode="Chon (1/2/3/4): "
+if "%neo4j_mode%"=="1" goto neo4j_limited
+if "%neo4j_mode%"=="2" goto neo4j_full
+if "%neo4j_mode%"=="3" goto neo4j_dry_run
+if "%neo4j_mode%"=="4" goto menu
+goto sync_neo4j
+
+:neo4j_limited
+set "neo4j_limit="
+set /p neo4j_limit="Nhap gioi han moi entity (Mac dinh 100): "
+if "%neo4j_limit%"=="" set "neo4j_limit=100"
+set "neo4j_args=--type full --limit %neo4j_limit%"
+goto run_neo4j
+
+:neo4j_full
+echo.
+echo [CANH BAO] Full sync se ghi toan bo graph va dung lai cac mang quan he phai sinh.
+set "neo4j_confirm="
+set /p neo4j_confirm="Nhap FULL de xac nhan: "
+if /I not "%neo4j_confirm%"=="FULL" (
+    echo [INFO] Da huy full sync Neo4j.
+    pause
+    goto menu
+)
+set "neo4j_args=--type full --all"
+goto run_neo4j
+
+:neo4j_dry_run
+set "PIPELINE_DRY_RUN=1"
+set "neo4j_args=--type full --limit 100"
+goto run_neo4j
+
+:run_neo4j
+if not exist "Tool-pg-to-neo4j\src\main.py" (
+    echo [ERROR] Khong tim thay Tool-pg-to-neo4j\src\main.py
+    if /I "%PIPELINE_DRY_RUN%"=="1" exit /b 1
+    pause
+    goto menu
+)
+if not exist "Tool-pg-to-neo4j\.env" (
+    echo [ERROR] Khong tim thay Tool-pg-to-neo4j\.env
+    if /I "%PIPELINE_DRY_RUN%"=="1" exit /b 1
+    pause
+    goto menu
+)
+
+echo.
+echo [INFO] Lenh Neo4j: python src\main.py %neo4j_args%
+if /I "%PIPELINE_DRY_RUN%"=="1" (
+    echo [DRY-RUN] Hop le. Khong ket noi PostgreSQL/Neo4j, khong ghi du lieu.
+    if /I "%PIPELINE_DRY_RUN_EXIT%"=="1" exit /b 0
+    set "PIPELINE_DRY_RUN="
+    pause
+    goto menu
+)
+
+python -c "import neo4j, psycopg2" >nul 2>&1
+if errorlevel 1 goto neo4j_dependency_missing
+goto neo4j_dependencies_ok
+
+:neo4j_dependency_missing
+echo [ERROR] Thieu dependency cho tool Neo4j trong Python interpreter:
+python -c "import sys; print(sys.executable)"
+echo.
+choice /c YN /n /m "Cai dependency vao dung interpreter nay? (Y/N): "
+if errorlevel 2 (
+    echo [INFO] Da huy. Co the cai thu cong bang: python -m pip install neo4j
+    pause
+    goto menu
+)
+
+python -m pip install "neo4j>=5.14.0,<6.0.0" "psycopg2-binary>=2.9.0" "python-dotenv>=1.0.0"
+if errorlevel 1 (
+    echo [ERROR] Cai dependency Neo4j that bai.
+    pause
+    goto menu
+)
+
+python -c "import neo4j, psycopg2" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Dependency da cai nhung van khong import duoc.
+    pause
+    goto menu
+)
+
+:neo4j_dependencies_ok
+
+pushd "Tool-pg-to-neo4j"
+python src\main.py %neo4j_args%
+set "neo4j_exit=%errorlevel%"
+popd
+
+if not "%neo4j_exit%"=="0" (
+    echo.
+    echo [ERROR] Sync Neo4j that bai voi exit code %neo4j_exit%.
+    pause
+    goto menu
+)
+
+echo.
+echo [OK] Sync PostgreSQL -^> Neo4j hoan tat.
+pause
+goto menu
+
+:sync_meilisearch
+cls
+echo ==========================================
+echo  L. SYNC POSTGRESQL -^> MEILISEARCH
+echo ==========================================
+echo [INFO] Tool dung cau hinh rieng tai pg-to-melisearch\.env
+echo [INFO] PostgreSQL chi duoc doc; Meilisearch se duoc tao/cap nhat index.
+echo [CANH BAO] Tool hien tai se huy cac task Meilisearch dang pending khi khoi dong.
+echo [INFO] Sau khi chay, tool se cho chon ALL hoac LIMIT moi bang.
+echo.
+set "meili_confirm="
+set /p meili_confirm="Nhap MEILI de tiep tuc, hoac Enter de quay lai: "
+if /I not "%meili_confirm%"=="MEILI" goto menu
+goto run_meilisearch
+
+:run_meilisearch
+if not exist "pg-to-melisearch\main.py" (
+    echo [ERROR] Khong tim thay pg-to-melisearch\main.py
+    if /I "%PIPELINE_MEILI_DRY_RUN_EXIT%"=="1" exit /b 1
+    pause
+    goto menu
+)
+if not exist "pg-to-melisearch\.env" (
+    echo [ERROR] Khong tim thay pg-to-melisearch\.env
+    if /I "%PIPELINE_MEILI_DRY_RUN_EXIT%"=="1" exit /b 1
+    pause
+    goto menu
+)
+if not exist "pg-to-melisearch\requirements.txt" (
+    echo [ERROR] Khong tim thay pg-to-melisearch\requirements.txt
+    if /I "%PIPELINE_MEILI_DRY_RUN_EXIT%"=="1" exit /b 1
+    pause
+    goto menu
+)
+
+echo.
+echo [INFO] Lenh Meilisearch: python main.py
+if /I "%PIPELINE_MEILI_DRY_RUN_EXIT%"=="1" (
+    echo [DRY-RUN] Hop le. Khong ket noi PostgreSQL/Meilisearch, khong ghi du lieu.
+    exit /b 0
+)
+
+python -c "import meilisearch, psycopg2, dotenv" >nul 2>&1
+if errorlevel 1 goto meilisearch_dependency_missing
+goto meilisearch_dependencies_ok
+
+:meilisearch_dependency_missing
+echo [ERROR] Thieu dependency cho tool Meilisearch trong Python interpreter:
+python -c "import sys; print(sys.executable)"
+echo.
+choice /c YN /n /m "Cai dependency vao dung interpreter nay? (Y/N): "
+if errorlevel 2 (
+    echo [INFO] Da huy cai dependency.
+    pause
+    goto menu
+)
+
+python -m pip install -r "pg-to-melisearch\requirements.txt"
+if errorlevel 1 (
+    echo [ERROR] Cai dependency Meilisearch that bai.
+    pause
+    goto menu
+)
+
+python -c "import meilisearch, psycopg2, dotenv" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Dependency da cai nhung van khong import duoc.
+    pause
+    goto menu
+)
+
+:meilisearch_dependencies_ok
+pushd "pg-to-melisearch"
+python main.py
+set "meilisearch_exit=%errorlevel%"
+popd
+
+if not "%meilisearch_exit%"=="0" (
+    echo.
+    echo [ERROR] Sync Meilisearch that bai voi exit code %meilisearch_exit%.
+    pause
+    goto menu
+)
+
+echo.
+echo [OK] Sync PostgreSQL -^> Meilisearch hoan tat.
+pause
+goto menu
+
+:embed_db
+if /I "%PIPELINE_EMBED_MENU_DRY_RUN_EXIT%"=="1" (
+    echo [DRY-RUN] Label embed_db hop le. Khong ket noi database.
+    exit /b 0
+)
+cls
+echo ==========================================
+echo  V. EMBED ARTICLE VECTORS
+echo ==========================================
+echo [INFO] Tool dung cau hinh rieng tai embedding-tool\.env
+echo [INFO] Chi Article co embedding IS NULL moi duoc xu ly.
+echo [CANH BAO] Tool se tu choi neu DB da co vector khac so chieu.
+echo.
+echo  Chon dimensions:
+echo  1. 768 dimensions - all-mpnet-base-v2 (Local)
+echo  2. 3072 dimensions - qwen3-embedding:8b (Ollama Local)
+echo  3. Quay lai menu chinh
+echo.
+set "embedding_dimension="
+set /p embedding_dimension_choice="Chon (1/2/3): "
+if "%embedding_dimension_choice%"=="1" set "embedding_dimension=768"
+if "%embedding_dimension_choice%"=="2" set "embedding_dimension=3072"
+if "%embedding_dimension_choice%"=="3" goto menu
+if not defined embedding_dimension goto embed_db
+
+echo.
+echo  Chon so bai can xu ly:
+echo  1. 100 bai (khuyen dung de test)
+echo  2. 1,000 bai
+echo  3. Tat ca bai con thieu embedding
+echo  4. Quay lai menu chinh
+echo.
+set "embedding_limit="
+set /p embedding_limit_choice="Chon (1/2/3/4): "
+if "%embedding_limit_choice%"=="1" set "embedding_limit=100"
+if "%embedding_limit_choice%"=="2" set "embedding_limit=1000"
+if "%embedding_limit_choice%"=="3" set "embedding_limit=0"
+if "%embedding_limit_choice%"=="4" goto menu
+if not defined embedding_limit goto embed_db
+
+echo.
+echo  1. Dry-run - chi kiem tra config, khong tai model/ket noi DB
+echo  2. Chay embedding that
+echo  3. Quay lai menu chinh
+echo.
+set "embedding_run_mode="
+set /p embedding_run_mode="Chon (1/2/3): "
+if "%embedding_run_mode%"=="1" goto embedding_dry_run
+if "%embedding_run_mode%"=="2" goto embedding_confirm
+if "%embedding_run_mode%"=="3" goto menu
+goto embed_db
+
+:embedding_dry_run
+set "embedding_is_dry_run=1"
+set "embedding_args=--dimension %embedding_dimension% --limit %embedding_limit% --dry-run"
+goto run_embedding
+
+:embedding_confirm
+echo.
+echo [CANH BAO] Embedding se ghi vector vao PostgreSQL theo embedding-tool\.env.
+set "embedding_confirm="
+set /p embedding_confirm="Nhap EMBED de xac nhan: "
+if /I not "%embedding_confirm%"=="EMBED" (
+    echo [INFO] Da huy embedding.
+    pause
+    goto menu
+)
+set "embedding_is_dry_run=0"
+set "embedding_args=--dimension %embedding_dimension% --limit %embedding_limit%"
+goto run_embedding
+
+:run_embedding
+if not exist "embedding-tool\embed_database.py" (
+    echo [ERROR] Khong tim thay embedding-tool\embed_database.py
+    if /I "%PIPELINE_EMBED_DRY_RUN_EXIT%"=="1" exit /b 1
+    pause
+    goto menu
+)
+if not exist "embedding-tool\.env" (
+    echo [ERROR] Khong tim thay embedding-tool\.env
+    if /I "%PIPELINE_EMBED_DRY_RUN_EXIT%"=="1" exit /b 1
+    pause
+    goto menu
+)
+
+echo.
+echo [INFO] Lenh embedding: python embed_database.py %embedding_args%
+if not "%embedding_is_dry_run%"=="1" goto embedding_dependency_check
+goto embedding_dependencies_ok
+
+:embedding_dependency_check
+if "%embedding_dimension%"=="3072" goto embedding_dependency_check_ollama
+
+:embedding_dependency_check_local
+python -c "import sentence_transformers, psycopg2, dotenv" >nul 2>&1
+if errorlevel 1 goto embedding_dependency_missing_local
+goto embedding_dependencies_ok
+
+:embedding_dependency_check_ollama
+python -c "import ollama, psycopg2, dotenv" >nul 2>&1
+if errorlevel 1 goto embedding_dependency_missing_ollama
+goto embedding_dependencies_ok
+
+:embedding_dependency_missing_local
+set "embedding_requirements=embedding-tool\requirements-local.txt"
+goto embedding_dependency_install
+
+:embedding_dependency_missing_ollama
+set "embedding_requirements=embedding-tool\requirements-ollama.txt"
+goto embedding_dependency_install
+
+:embedding_dependency_install
+echo [ERROR] Thieu dependency cho embedding %embedding_dimension% dimensions trong Python interpreter:
+python -c "import sys; print(sys.executable)"
+echo.
+choice /c YN /n /m "Cai dependency vao dung interpreter nay? (Y/N): "
+if errorlevel 2 (
+    echo [INFO] Da huy cai dependency.
+    pause
+    goto menu
+)
+
+python -m pip install --timeout 120 --retries 10 -r "%embedding_requirements%"
+if errorlevel 1 (
+    echo [ERROR] Cai dependency embedding that bai.
+    pause
+    goto menu
+)
+
+if "%embedding_dimension%"=="3072" goto embedding_dependency_recheck_ollama
+
+:embedding_dependency_recheck_local
+python -c "import sentence_transformers, psycopg2, dotenv" >nul 2>&1
+if not errorlevel 1 goto embedding_dependencies_ok
+goto embedding_dependency_still_missing
+
+:embedding_dependency_recheck_ollama
+python -c "import ollama, psycopg2, dotenv" >nul 2>&1
+if not errorlevel 1 goto embedding_dependencies_ok
+
+:embedding_dependency_still_missing
+echo [ERROR] Dependency da cai nhung van khong import duoc.
+pause
+goto menu
+
+:embedding_dependencies_ok
+pushd "embedding-tool"
+python embed_database.py %embedding_args%
+set "embedding_exit=%errorlevel%"
+popd
+
+if not "%embedding_exit%"=="0" (
+    echo.
+    echo [ERROR] Embedding that bai voi exit code %embedding_exit%.
+    if /I "%PIPELINE_EMBED_DRY_RUN_EXIT%"=="1" exit /b %embedding_exit%
+    pause
+    goto menu
+)
+
+echo.
+if "%embedding_is_dry_run%"=="1" (
+    echo [OK] Dry-run embedding hop le. Khong ghi database.
+) else (
+    echo [OK] Embedding Article hoan tat.
+)
+if /I "%PIPELINE_EMBED_DRY_RUN_EXIT%"=="1" exit /b 0
 pause
 goto menu
 

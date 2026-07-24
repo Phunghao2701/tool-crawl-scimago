@@ -13,3 +13,10 @@ This is the root routing contract for Claude Code and Codex.
 - Keep root context concise; route deep implementation detail into plans, task notes, research, workstreams, or architecture docs.
 - Treat `_ref/` as ignored external reference material and `_ops/` as ignored local operations state.
 - Prefer repo-local workflow artifacts over tool-specific chat memory.
+
+## Pipeline Monitoring Memory
+
+- For ETL monitoring or resume work, close every terminal event (`goal_reached`, `budget_exhausted`, `user_stopped`, or `failed`) and explicit session wrap-up with a durable Obsidian handoff before the final response.
+- Resolve the active vault from `OBSIDIAN_VAULT_PATH` when set; otherwise read `%APPDATA%/obsidian/obsidian.json` and select the vault marked `open: true`. Read that vault's `AGENTS.md` before writing.
+- Create a new UTF-8 note under `memory/conversations/` named with the date/time and project; never overwrite an existing conversation note. Record the objective, verified stats, process/lock state, checkpoints, relevant logs, code changes, decisions, unresolved items, and next step.
+- Keep API keys, database credentials, and `.env` contents out of second-brain notes. Clearly distinguish directly verified facts from conversation-reported or inferred state.

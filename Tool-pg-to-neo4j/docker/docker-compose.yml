@@ -1,0 +1,91 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: research_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DATABASE}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - research_network
+
+  neo4j:
+    image: neo4j:5.14-community
+    container_name: research_neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - research_network
+
+  redis:
+    image: redis:7
+    container_name: research_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - research_network
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: research_redisinsight
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight_data:/data
+    networks:
+      - research_network
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+
+    container_name: research_graph_sync
+
+    env_file:
+      - ../.env
+
+    depends_on:
+      postgres:
+        condition: service_started
+      neo4j:
+        condition: service_started
+      redis:
+        condition: service_started
+
+    networks:
+      - research_network
+
+    volumes:
+      # ĐÃ SỬA: Thay thế "../logs" bằng Named Volume để chạy mượt trên Server Debian
+      - app_logs:/app/logs
+
+    command: python src/main.py --loop
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  redisinsight_data:
+  # ĐÃ THÊM: Khai báo volume lưu logs cho ứng dụng app của bạn
+  app_logs:
+
+networks:
+  research_network:
+    driver: bridge

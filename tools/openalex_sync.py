@@ -20,6 +20,9 @@ import threading
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
+
+from pipeline_lock import acquire as acquire_lock
 # Lấy đường dẫn tuyệt đối tới file .env nằm ở thư mục gốc của project
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv_path = os.path.join(BASE_DIR, ".env")
@@ -69,6 +72,22 @@ def check_insufficient_budget(resp):
             pass
 
 
+_thread_local = threading.local()
+
+
+def _get_session() -> requests.Session:
+    """Mot requests.Session ben vung cho moi thread, tai su dung ket noi (keep-alive)
+    thay vi mo socket TCP moi cho tung request - tranh can kiet socket buffer khi
+    chay nhieu thread song song (WinError 10055 tren Windows)."""
+    if not hasattr(_thread_local, "session"):
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=2, pool_maxsize=2)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _thread_local.session = session
+    return _thread_local.session
+
+
 def safe_get(url, headers=None, timeout=15):
     import urllib3
     import urllib.parse as urllib_parse
@@ -94,11 +113,11 @@ def safe_get(url, headers=None, timeout=15):
     if headers is None:
         headers = get_headers()
         
+    session = _get_session()
     retries = 3
     for attempt in range(retries):
         try:
-            # Thử gọi kiểm tra SSL thông thường trước
-            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp = session.get(url, headers=headers, timeout=timeout)
             if resp.status_code == 429:
                 check_insufficient_budget(resp)
                 print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s before retry {attempt+1}/{retries}...")
@@ -106,26 +125,17 @@ def safe_get(url, headers=None, timeout=15):
                 continue
             return resp
         except Exception as e:
-            # Bắt các lỗi kết nối/SSL
-            print(f"  [SSL/Connection Warning] Attempt {attempt+1}/{retries} failed: {e}. Retrying with verify=False...")
-            try:
-                resp = requests.get(url, headers=headers, timeout=timeout, verify=False)
-                if resp.status_code == 429:
-                    check_insufficient_budget(resp)
-                    print(f"  [API Limit] HTTP 429 (Too Many Requests). Sleeping 10s...")
-                    time.sleep(10)
-                    continue
-                return resp
-            except Exception as e_inner:
-                print(f"  [Error] Fallback verify=False failed: {e_inner}")
-                if attempt < retries - 1:
-                    time.sleep(3)
-                else:
-                    # Trả về một đối tượng giả lập để tránh làm sập chương trình
-                    class FakeResponse:
-                        status_code = 500
-                        def json(self): return {}
-                    return FakeResponse()
+            # Bắt các lỗi kết nối/SSL (vd WinError 10055 khi socket buffer can kiet):
+            # nghi 1 chut roi thu lai tren cung session thay vi mo socket moi ngay lap tuc.
+            print(f"  [Connection Warning] Attempt {attempt+1}/{retries} failed: {e}.")
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))
+            else:
+                # Trả về một đối tượng giả lập để tránh làm sập chương trình
+                class FakeResponse:
+                    status_code = 500
+                    def json(self): return {}
+                return FakeResponse()
                     
     # Hết lượt retry và vẫn bị 429
     class FakeResponse429:
@@ -595,11 +605,21 @@ def update_author_in_db(engine, author_id, data):
         last_inst_id = last_inst_list[0].get("id")
         
 
-    with engine.begin() as conn:
-        conn.execute(text("""
+    def execute_update(
+        preserve_existing_orcid=False,
+        preserve_existing_openalex_id=False,
+    ):
+        with engine.begin() as conn:
+            conn.execute(text("""
             UPDATE "Author"
-            SET openalex_id = :openalex_id,
-                orcid = :orcid,
+            SET openalex_id = CASE
+                    WHEN :preserve_existing_openalex_id THEN openalex_id
+                    ELSE :openalex_id
+                END,
+                orcid = CASE
+                    WHEN :preserve_existing_orcid THEN orcid
+                    ELSE :orcid
+                END,
                 display_name = COALESCE(:disp_name, display_name),
                 works_count = :works_count,
                 cited_by_count = :cited_by_count,
@@ -610,18 +630,56 @@ def update_author_in_db(engine, author_id, data):
                 created_at = :synced_at
             WHERE author_id = :author_id
         """), {
-            "openalex_id": openalex_id,
-            "orcid": orcid,
-            "disp_name": disp_name,
-            "works_count": works_count,
-            "cited_by_count": cited_by_count,
-            "h_index": h_index,
-            "i10_index": i10_index,
-            "last_inst_name": last_inst_name,
-            "last_inst_id": last_inst_id,
-            "synced_at": datetime.now(timezone.utc),
-            "author_id": author_id
-        })
+                "openalex_id": openalex_id,
+                "preserve_existing_openalex_id": preserve_existing_openalex_id,
+                "orcid": orcid,
+                "preserve_existing_orcid": preserve_existing_orcid,
+                "disp_name": disp_name,
+                "works_count": works_count,
+                "cited_by_count": cited_by_count,
+                "h_index": h_index,
+                "i10_index": i10_index,
+                "last_inst_name": last_inst_name,
+                "last_inst_id": last_inst_id,
+                "synced_at": datetime.now(timezone.utc),
+                "author_id": author_id
+            })
+
+    preserve_existing_orcid = False
+    preserve_existing_openalex_id = False
+    while True:
+        try:
+            execute_update(
+                preserve_existing_orcid=preserve_existing_orcid,
+                preserve_existing_openalex_id=preserve_existing_openalex_id,
+            )
+            break
+        except IntegrityError as exc:
+            # OpenAlex can return identifiers already owned by another local
+            # Author row (for example after OpenAlex merges duplicate authors).
+            # Preserve only the conflicting local identifier and still apply the
+            # remaining details so one author cannot abort its 50-author chunk.
+            error_text = str(exc)
+            if "Author_orcid_key" in error_text and not preserve_existing_orcid:
+                preserve_existing_orcid = True
+                print(
+                    f"  [WARN] author_id={author_id}: OpenAlex ORCID already belongs to "
+                    "another local Author; preserving the local ORCID.",
+                    flush=True,
+                )
+                continue
+            if (
+                "Author_openalex_id_key" in error_text
+                and not preserve_existing_openalex_id
+            ):
+                preserve_existing_openalex_id = True
+                print(
+                    f"  [WARN] author_id={author_id}: OpenAlex ID already belongs to "
+                    "another local Author; preserving the local OpenAlex ID.",
+                    flush=True,
+                )
+                continue
+            raise
 
 
 def _sync_authors_chunk(engine, chunk, is_orcid, id_to_author, orcid_to_author, author_map):
@@ -897,7 +955,7 @@ def cmd_export_authors(args):
 def _db_process_single_work(
     conn, work, journal_uuid,
     topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
-    keyword_cache, volume_cache, issue_cache
+    keyword_cache, volume_cache, issue_cache, cache_lock
 ):
     work_title = work.get("title")
     if not work_title:
@@ -1130,62 +1188,65 @@ def _db_process_single_work(
         
         if auth_name:
             author_uuid = None
-            
-            # 4.1 Tra cứu cache trước
-            if auth_openalex_id and auth_openalex_id in author_id_cache:
-                author_uuid = author_id_cache[auth_openalex_id]
-            elif auth_orcid and auth_orcid in author_orcid_cache:
-                author_uuid = author_orcid_cache[auth_orcid]
-            elif not auth_openalex_id and not auth_orcid and auth_name in author_name_cache:
-                author_uuid = author_name_cache[auth_name]
-                
-            # 4.2 Nếu không có trong cache, truy vấn DB
-            if not author_uuid:
-                # Ưu tiên tìm theo OpenAlex ID
-                if auth_openalex_id:
-                    a_row = conn.execute(text("""
-                        SELECT author_id FROM "Author" WHERE openalex_id = :oid
-                    """), {"oid": auth_openalex_id}).fetchone()
-                    if a_row:
-                        author_uuid = a_row[0]
-                        
-                # Tìm theo ORCID nếu không tìm thấy theo OpenAlex ID
-                if not author_uuid and auth_orcid:
-                    a_row = conn.execute(text("""
-                        SELECT author_id FROM "Author" WHERE orcid = :orcid
-                    """), {"orcid": auth_orcid}).fetchone()
-                    if a_row:
-                        author_uuid = a_row[0]
-                        
-                # Tìm theo Tên nếu không có ID nào
+
+            # Get-or-create phai serialize qua cac thread de tranh tao trung
+            # Author khi 2 luong cung gap 1 tac gia moi lan dau (race condition).
+            with cache_lock:
+                # 4.1 Tra cứu cache trước
+                if auth_openalex_id and auth_openalex_id in author_id_cache:
+                    author_uuid = author_id_cache[auth_openalex_id]
+                elif auth_orcid and auth_orcid in author_orcid_cache:
+                    author_uuid = author_orcid_cache[auth_orcid]
+                elif not auth_openalex_id and not auth_orcid and auth_name in author_name_cache:
+                    author_uuid = author_name_cache[auth_name]
+
+                # 4.2 Nếu không có trong cache, truy vấn DB
                 if not author_uuid:
-                    a_row = conn.execute(text("""
-                        SELECT author_id FROM "Author" WHERE display_name = :name AND openalex_id IS NULL AND orcid IS NULL
-                    """), {"name": auth_name}).fetchone()
-                    if a_row:
-                        author_uuid = a_row[0]
-                        
-            # 4.3 Nếu vẫn không tìm thấy, tạo tác giả mới
-            if not author_uuid:
-                author_uuid = conn.execute(text("""
-                    INSERT INTO "Author" (display_name, orcid, openalex_id)
-                    VALUES (:name, :orcid, :openalex_id)
-                    RETURNING author_id
-                """), {
-                    "name": auth_name,
-                    "orcid": auth_orcid,
-                    "openalex_id": auth_openalex_id
-                }).scalar()
-                
-            # 4.4 Cập nhật cache
-            if auth_openalex_id:
-                author_id_cache[auth_openalex_id] = author_uuid
-            if auth_orcid:
-                author_orcid_cache[auth_orcid] = author_uuid
-            if not auth_openalex_id and not auth_orcid:
-                author_name_cache[auth_name] = author_uuid
-                
-            # Liên kết Author và Article
+                    # Ưu tiên tìm theo OpenAlex ID
+                    if auth_openalex_id:
+                        a_row = conn.execute(text("""
+                            SELECT author_id FROM "Author" WHERE openalex_id = :oid
+                        """), {"oid": auth_openalex_id}).fetchone()
+                        if a_row:
+                            author_uuid = a_row[0]
+
+                    # Tìm theo ORCID nếu không tìm thấy theo OpenAlex ID
+                    if not author_uuid and auth_orcid:
+                        a_row = conn.execute(text("""
+                            SELECT author_id FROM "Author" WHERE orcid = :orcid
+                        """), {"orcid": auth_orcid}).fetchone()
+                        if a_row:
+                            author_uuid = a_row[0]
+
+                    # Tìm theo Tên nếu không có ID nào
+                    if not author_uuid:
+                        a_row = conn.execute(text("""
+                            SELECT author_id FROM "Author" WHERE display_name = :name AND openalex_id IS NULL AND orcid IS NULL
+                        """), {"name": auth_name}).fetchone()
+                        if a_row:
+                            author_uuid = a_row[0]
+
+                # 4.3 Nếu vẫn không tìm thấy, tạo tác giả mới
+                if not author_uuid:
+                    author_uuid = conn.execute(text("""
+                        INSERT INTO "Author" (display_name, orcid, openalex_id)
+                        VALUES (:name, :orcid, :openalex_id)
+                        RETURNING author_id
+                    """), {
+                        "name": auth_name,
+                        "orcid": auth_orcid,
+                        "openalex_id": auth_openalex_id
+                    }).scalar()
+
+                # 4.4 Cập nhật cache
+                if auth_openalex_id:
+                    author_id_cache[auth_openalex_id] = author_uuid
+                if auth_orcid:
+                    author_orcid_cache[auth_orcid] = author_uuid
+                if not auth_openalex_id and not auth_orcid:
+                    author_name_cache[auth_name] = author_uuid
+
+            # Liên kết Author và Article (khong can lock: chi phu thuoc author_uuid da resolve)
             if author_uuid and article_uuid:
                 conn.execute(text("""
                     INSERT INTO "Author_Article" (author_id, article_id)
@@ -1202,23 +1263,24 @@ def _db_process_single_work(
         kw_name = kw.get("display_name")
         kw_score = kw.get("score", 0.0)
         if kw_name:
-            if kw_name in keyword_cache:
-                kw_uuid = keyword_cache[kw_name]
-            else:
-                kw_row = conn.execute(text("""
-                    SELECT keyword_id FROM "Keyword" WHERE display_name = :name
-                """), {"name": kw_name}).fetchone()
-                
-                if kw_row:
-                    kw_uuid = kw_row[0]
+            with cache_lock:
+                if kw_name in keyword_cache:
+                    kw_uuid = keyword_cache[kw_name]
                 else:
-                    kw_uuid = conn.execute(text("""
-                        INSERT INTO "Keyword" (display_name)
-                        VALUES (:name)
-                        RETURNING keyword_id
-                    """), {"name": kw_name}).scalar()
-                keyword_cache[kw_name] = kw_uuid
-                    
+                    kw_row = conn.execute(text("""
+                        SELECT keyword_id FROM "Keyword" WHERE display_name = :name
+                    """), {"name": kw_name}).fetchone()
+
+                    if kw_row:
+                        kw_uuid = kw_row[0]
+                    else:
+                        kw_uuid = conn.execute(text("""
+                            INSERT INTO "Keyword" (display_name)
+                            VALUES (:name)
+                            RETURNING keyword_id
+                        """), {"name": kw_name}).scalar()
+                    keyword_cache[kw_name] = kw_uuid
+
             conn.execute(text("""
                 INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
                 VALUES (:keyword_id, :article_id, :score)
@@ -1243,44 +1305,45 @@ def _db_process_single_work(
         subfield_data = t_item.get("subfield") or {}
         subfield_name = subfield_data.get("display_name")
         
-        if t_name in topic_cache:
-            sub_topic_uuid = topic_cache[t_name]
-        else:
-            subject_area_id, subject_category_id = get_or_create_subject_info(
-                conn, field_name, subfield_name
-            )
-            
-            sub_t_row = conn.execute(text("""
-                SELECT topic_id FROM "Topic" WHERE display_name = :name
-            """), {"name": t_name}).fetchone()
-            
-            if sub_t_row:
-                sub_topic_uuid = sub_t_row[0]
-                conn.execute(text("""
-                    UPDATE "Topic"
-                    SET subject_area_id = COALESCE(subject_area_id, :area_id),
-                        subject_category_id = COALESCE(subject_category_id, :cat_id),
-                        score = :score
-                    WHERE topic_id = :topic_id
-                """), {
-                    "area_id": subject_area_id,
-                    "cat_id": subject_category_id,
-                    "score": t_score,
-                    "topic_id": sub_topic_uuid
-                })
+        with cache_lock:
+            if t_name in topic_cache:
+                sub_topic_uuid = topic_cache[t_name]
             else:
-                sub_topic_uuid = conn.execute(text("""
-                    INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
-                    VALUES (:name, :score, :area_id, :cat_id)
-                    RETURNING topic_id
-                """), {
-                    "name": t_name, 
-                    "score": t_score,
-                    "area_id": subject_area_id,
-                    "cat_id": subject_category_id
-                }).scalar()
-            topic_cache[t_name] = sub_topic_uuid
-            
+                subject_area_id, subject_category_id = get_or_create_subject_info(
+                    conn, field_name, subfield_name
+                )
+
+                sub_t_row = conn.execute(text("""
+                    SELECT topic_id FROM "Topic" WHERE display_name = :name
+                """), {"name": t_name}).fetchone()
+
+                if sub_t_row:
+                    sub_topic_uuid = sub_t_row[0]
+                    conn.execute(text("""
+                        UPDATE "Topic"
+                        SET subject_area_id = COALESCE(subject_area_id, :area_id),
+                            subject_category_id = COALESCE(subject_category_id, :cat_id),
+                            score = :score
+                        WHERE topic_id = :topic_id
+                    """), {
+                        "area_id": subject_area_id,
+                        "cat_id": subject_category_id,
+                        "score": t_score,
+                        "topic_id": sub_topic_uuid
+                    })
+                else:
+                    sub_topic_uuid = conn.execute(text("""
+                        INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
+                        VALUES (:name, :score, :area_id, :cat_id)
+                        RETURNING topic_id
+                    """), {
+                        "name": t_name,
+                        "score": t_score,
+                        "area_id": subject_area_id,
+                        "cat_id": subject_category_id
+                    }).scalar()
+                topic_cache[t_name] = sub_topic_uuid
+
         conn.execute(text("""
             INSERT INTO "Sub_Topic" (article_id, topic_id)
             VALUES (:article_id, :topic_id)
@@ -1291,9 +1354,13 @@ def _db_process_single_work(
         })
 
 
-def sync_works(limit: int):
-    engine = create_engine(DATABASE_URL)
-    
+def sync_works(limit: int, journal_offset: int = 0):
+    # pool_size du cho toi da 10 thread cung mo transaction (xem ThreadPoolExecutor ben duoi)
+    engine = create_engine(
+        DATABASE_URL, pool_size=12, max_overflow=6,
+        connect_args={"options": "-c statement_timeout=120000"},  # 2 phut, tranh treo vinh vien
+    )
+
     # 1. Lấy danh sách các Journal đã match OpenAlex để đồng bộ bài viết.
     # created_at là thời điểm tạo record, không còn là works_synced_at marker.
     query_journals = """
@@ -1304,122 +1371,155 @@ def sync_works(limit: int):
     """
     with engine.connect() as conn:
         journals = conn.execute(text(query_journals)).fetchall()
-        
+
     if not journals:
         print("[INFO] No OpenAlex-matched journals found in database. Please sync journals first.")
         return
-        
+
+    total_journals = len(journals)
+    if journal_offset < 0:
+        raise ValueError("journal_offset must be >= 0")
+    if journal_offset >= total_journals:
+        print(f"[INFO] Journal offset {journal_offset:,} is at or beyond the {total_journals:,} available journals.")
+        return
+    if journal_offset:
+        journals = journals[journal_offset:]
+        print(
+            f"[sync-works] Resuming from ordered journal offset {journal_offset:,}; "
+            f"{len(journals):,} journals remain."
+        )
+
     print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
-    
-    # Cache toàn cục trong suốt lượt chạy sync_works
+
+    # Cache toàn cục trong suốt lượt chạy sync_works, dùng chung giữa các luồng.
+    # cache_lock bảo vệ việc get-or-create Author/Keyword/Topic để tránh 2 luồng
+    # cùng tạo trùng 1 bản ghi mới (race condition) khi chạy song song.
     topic_cache = {}          # key: display_name -> topic_id
     author_id_cache = {}      # key: openalex_id -> author_id
     author_orcid_cache = {}   # key: orcid -> author_id
     author_name_cache = {}    # key: display_name -> author_id
     keyword_cache = {}        # key: display_name -> keyword_id
-    
+    cache_lock = threading.Lock()
+
+    total = total_journals
     synced_works_count = 0
     consecutive_429 = 0
-    
-    for idx, journal in enumerate(journals, 1):
-        journal_uuid = journal[0]
-        openalex_id = journal[1]
-        journal_name = journal[2]
-        
-        # Cache cục bộ cho tạp chí hiện tại
+    max_workers = 10
+
+    def _process_one_journal(idx, journal):
+        journal_uuid, openalex_id, journal_name = journal
+
+        # Cache cục bộ cho tạp chí hiện tại (khong chia se giua cac thread)
         volume_cache = {}  # key: (volume_number, publication_year) -> volume_id
         issue_cache = {}   # key: (volume_id, issue_number, publication_year) -> issue_id
-        
-        print(f"[{idx}/{len(journals)}] Fetching works for Journal: {journal_name} ({openalex_id})")
-        
-        # Lấy clean ID của OpenAlex
+
+        print(f"[{idx}/{total}] Fetching works for Journal: {journal_name} ({openalex_id})")
+
         clean_id = openalex_id.split("/")[-1]
-        
+
         if limit:
             url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page={limit}"
             cursor_mode = False
         else:
-            # Lấy full data sử dụng cursor paging, per_page=200 để lấy nhanh nhất có thể
             url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page=200&cursor=*"
             cursor_mode = True
-            
+
+        local_synced = 0
         try:
             current_url = url
             page_idx = 1
             sync_success = True
             has_429 = False
-            
+
             while True:
                 import urllib.parse as urllib_parse
-                # Lịch sự tránh spam API
-                time.sleep(0.2)
+                # Lich su tranh spam API - OpenAlex polite pool (mailto+api_key) cho phep ~10 req/s.
+                # Chay o nhieu thread nen tong request/s se cao hon 1/0.1s, nhung van trong
+                # nguong an toan vi thoi gian cho chinh la network/DB, khong phai sleep nay.
+                time.sleep(0.1)
                 if cursor_mode:
-                    print(f"  -> Fetching page {page_idx} via cursor...")
+                    print(f"  -> [{idx}] Fetching page {page_idx} via cursor...")
                 else:
-                    print(f"  -> Fetching works page...")
-                    
+                    print(f"  -> [{idx}] Fetching works page...")
+
                 response = safe_get(current_url, timeout=15)
                 if response.status_code != 200:
-                    print(f"  -> FAILED to fetch works: HTTP {response.status_code}")
+                    print(f"  -> [{idx}] FAILED to fetch works: HTTP {response.status_code}")
                     sync_success = False
                     if response.status_code == 429:
                         has_429 = True
                     break
-                    
+
                 data = response.json()
                 works = data.get("results", [])
                 meta = data.get("meta", {})
-                
+
                 if not works:
                     if cursor_mode and page_idx > 1:
-                        print("  -> No more works found.")
+                        print(f"  -> [{idx}] No more works found.")
                     else:
-                        print("  -> No works found for this journal.")
+                        print(f"  -> [{idx}] No works found for this journal.")
                     break
-                    
-                print(f"  -> Processing {len(works)} works on page {page_idx}...")
-                
+
+                print(f"  -> [{idx}] Processing {len(works)} works on page {page_idx}...")
+
                 with engine.begin() as conn:
                     for work in works:
                         _db_process_single_work(
                             conn, work, journal_uuid,
                             topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
-                            keyword_cache, volume_cache, issue_cache
+                            keyword_cache, volume_cache, issue_cache, cache_lock
                         )
-                        synced_works_count += 1
-                
+                        local_synced += 1
+
                 if not cursor_mode:
                     break
-                    
+
                 next_cursor = meta.get("next_cursor")
                 if not next_cursor:
                     break
-                    
-                # Cập nhật URL với next_cursor
+
                 parsed = urllib_parse.urlparse(current_url)
                 query_params = urllib_parse.parse_qs(parsed.query)
                 query_params['cursor'] = [next_cursor]
                 new_query = urllib_parse.urlencode(query_params, doseq=True)
                 current_url = parsed._replace(query=new_query).geturl()
                 page_idx += 1
-                
+
             if sync_success:
-                print(f"  -> SUCCESS: Synced all works for Journal: {journal_name}.")
-                consecutive_429 = 0
+                print(f"  -> [{idx}] SUCCESS: Synced all works for Journal: {journal_name}.")
+            elif has_429:
+                print(f"  -> [{idx}] SKIPPED: Temporary API rate limit (429). Retaining for next run.")
             else:
-                if has_429:
-                    print("  -> SKIPPED: Temporary API rate limit (429). Retaining for next run.")
-                    consecutive_429 += 1
-                    if consecutive_429 >= 3:
-                        print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
-                        print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
-                        sys.exit(1)
-                else:
-                    consecutive_429 = 0
-                    print(f"  -> FAILED: Could not fetch all works for Journal: {journal_name}.")
+                print(f"  -> [{idx}] FAILED: Could not fetch all works for Journal: {journal_name}.")
+
+            return local_synced, sync_success, has_429
         except Exception as e:
-            print(f"  -> Request Exception for journal {journal_name}: {e}")
-            
+            print(f"  -> [{idx}] Request Exception for journal {journal_name}: {e}")
+            return local_synced, False, False
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_one_journal, idx, journal): idx
+            for idx, journal in enumerate(journals, journal_offset + 1)
+        }
+
+        for future in as_completed(futures):
+            local_synced, sync_success, has_429 = future.result()
+            synced_works_count += local_synced
+
+            if sync_success:
+                consecutive_429 = 0
+            elif has_429:
+                consecutive_429 += 1
+                if consecutive_429 >= 3:
+                    print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
+                    print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    sys.exit(1)
+            else:
+                consecutive_429 = 0
+
     print(f"\n[sync-works] Finished! Total synced works/articles: {synced_works_count}")
 
 
@@ -1530,6 +1630,10 @@ def main():
     # sync-works subcommand
     p_sync_works = sub.add_parser("sync-works", help="Sync works/articles from OpenAlex for synced authors")
     p_sync_works.add_argument("--limit", type=int, default=None, help="Limit number of works per author to sync")
+    p_sync_works.add_argument(
+        "--journal-offset", type=int, default=0,
+        help="Skip this many journals in stable journal_id order when resuming",
+    )
     
     # stats-works subcommand
     sub.add_parser("stats-works", help="Show statistics of synced academic entities (Articles, Topics, Keywords)")
@@ -1541,20 +1645,25 @@ def main():
     
     args = parser.parse_args()
     
+    # Only the write-heavy commands need the lock; stats/export just read and
+    # should stay freely runnable at any time for progress checks.
     if args.command == "sync":
+        acquire_lock("openalex_sync-sync")
         sync_journals(args.limit)
     elif args.command == "stats":
         cmd_stats(args)
     elif args.command == "export":
         cmd_export(args)
     elif args.command == "sync-authors":
+        acquire_lock("openalex_sync-sync-authors")
         sync_authors(args.limit)
     elif args.command == "stats-authors":
         cmd_stats_authors()
     elif args.command == "export-authors":
         cmd_export_authors(args)
     elif args.command == "sync-works":
-        sync_works(args.limit)
+        acquire_lock("openalex_sync-sync-works")
+        sync_works(args.limit, args.journal_offset)
     elif args.command == "stats-works":
         cmd_stats_works()
     elif args.command == "export-works":
