@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 rem Auto-create .env file if it does not exist
 if not exist .env (
-    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db > .env
+    echo DATABASE_URL=postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse > .env
     echo OPENALEX_EMAIL=academic-etl@example.com >> .env
     echo SEMANTIC_SCHOLAR_BASE_URL=https://api.semanticscholar.org/graph/v1 >> .env
     echo SEMANTIC_SCHOLAR_RPS=1 >> .env
@@ -98,17 +98,8 @@ echo [INFO] Dang cai dat cac thu vien Python can thiet...
 pip install -r requirements.txt
 pip install openpyxl
 
-echo [INFO] Dang khoi dong PostgreSQL qua Docker Compose...
-docker compose up -d --build
-
-echo [INFO] Doi 5 giay de co so du lieu khoi dong hoan tat...
-timeout /t 5 > nul
-
-echo [INFO] Dang khoi tao cau truc bang schema.sql...
-type database\schema.sql | docker exec -i scientific_journal_postgres psql -U postgres -d scientific_journal_db
-
-echo [INFO] Dang nap du lieu ranking metric mac dinh...
-type database\seed_ranking_metric.sql | docker exec -i scientific_journal_postgres psql -U postgres -d scientific_journal_db
+echo [INFO] Dang kiem tra ket noi va schema database researchpulse...
+python tools\scimago_etl.py stats
 
 echo.
 echo [OK] Setup moi truong va co so du lieu hoan tat thanh cong!
@@ -309,18 +300,18 @@ echo.
 for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB_VAL=%%A
 echo DB hien tai: %CURRENT_DB_VAL%
 echo.
-echo  1. Dung LOCAL Docker (postgresql://localhost:5433)
+echo  1. Dung PostgreSQL researchpulse (postgresql://localhost:5432)
 echo  2. Dung DB SAN XUAT (42.96.16.203 - cung DB voi Supabase da migrate)
 echo  3. Giu nguyen, quay lai menu
 echo.
 set /p db_choice="Chon (1/2/3): "
 
 if "%db_choice%"=="1" (
-    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
+    echo DATABASE_URL=postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
     echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
     echo.
-    echo [OK] Da chuyen sang LOCAL Docker DB!
+    echo [OK] Da chuyen sang PostgreSQL researchpulse!
     pause
     goto menu
 )

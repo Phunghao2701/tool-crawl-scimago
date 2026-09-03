@@ -30,7 +30,7 @@ load_dotenv(dotenv_path, override=True)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
+    "postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse",
 )
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "academic-etl@example.com")
 OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
@@ -149,35 +149,56 @@ def get_or_create_subject_info(conn, field_name, subfield_name):
     subject_category_id = None
     
     if field_name:
-        area_row = conn.execute(text("""
-            SELECT subject_area_id FROM "Subject_Area" WHERE LOWER(display_name) = LOWER(:name)
-        """), {"name": field_name}).fetchone()
-        if area_row:
-            subject_area_id = area_row[0]
-        else:
-            subject_area_id = conn.execute(text("""
-                INSERT INTO "Subject_Area" (display_name)
-                VALUES (:name)
-                RETURNING subject_area_id
-            """), {"name": field_name}).scalar()
+        subject_area_id = conn.execute(text("""
+            INSERT INTO "Subject_Area" (display_name)
+            VALUES (:name)
+            ON CONFLICT (display_name) DO UPDATE
+                SET display_name = EXCLUDED.display_name
+            RETURNING subject_area_id
+        """), {"name": field_name}).scalar()
             
     if subfield_name:
-        cat_row = conn.execute(text("""
-            SELECT subject_category_id FROM "Subject_Category" WHERE LOWER(display_name) = LOWER(:name)
-        """), {"name": subfield_name}).fetchone()
-        if cat_row:
-            subject_category_id = cat_row[0]
-        else:
-            # Tạo code ngẫu nhiên hoặc để trống nếu DB cho phép NULL
-            # Vì code là UNIQUE, nếu ta để NULL thì PostgreSQL cho phép nhiều dòng NULL
-            # nhưng nếu chèn rỗng/NULL thì an toàn nhất.
-            subject_category_id = conn.execute(text("""
-                INSERT INTO "Subject_Category" (subject_area_id, display_name)
-                VALUES (:area_id, :name)
-                RETURNING subject_category_id
-            """), {"area_id": subject_area_id, "name": subfield_name}).scalar()
+        subject_category_id = conn.execute(text("""
+            INSERT INTO "Subject_Category" (subject_area_id, display_name)
+            VALUES (:area_id, :name)
+            ON CONFLICT (subject_area_id, display_name) DO UPDATE
+                SET display_name = EXCLUDED.display_name
+            RETURNING subject_category_id
+        """), {"area_id": subject_area_id, "name": subfield_name}).scalar()
             
     return subject_area_id, subject_category_id
+
+
+def get_or_create_topic(conn, name, score, field_name, subfield_name):
+    subject_area_id, subject_category_id = get_or_create_subject_info(
+        conn, field_name, subfield_name
+    )
+    return conn.execute(text("""
+        INSERT INTO "Topic" (
+            display_name, score, subject_area_id, subject_category_id
+        )
+        VALUES (:name, :score, :area_id, :category_id)
+        ON CONFLICT (display_name) DO UPDATE SET
+            subject_area_id = COALESCE("Topic".subject_area_id, EXCLUDED.subject_area_id),
+            subject_category_id = COALESCE("Topic".subject_category_id, EXCLUDED.subject_category_id),
+            score = EXCLUDED.score
+        RETURNING topic_id
+    """), {
+        "name": name,
+        "score": score,
+        "area_id": subject_area_id,
+        "category_id": subject_category_id,
+    }).scalar()
+
+
+def get_or_create_keyword(conn, name):
+    return conn.execute(text("""
+        INSERT INTO "Keyword" (display_name)
+        VALUES (:name)
+        ON CONFLICT (display_name) DO UPDATE SET
+            display_name = EXCLUDED.display_name
+        RETURNING keyword_id
+    """), {"name": name}).scalar()
 
 
 def split_issns(v: str):
@@ -1081,43 +1102,14 @@ def _db_process_single_work(
         subfield_name = subfield_data.get("display_name")
         
         if t_name:
-            if t_name in topic_cache:
-                primary_topic_uuid = topic_cache[t_name]
-            else:
-                subject_area_id, subject_category_id = get_or_create_subject_info(
-                    conn, field_name, subfield_name
-                )
-                
-                t_row = conn.execute(text("""
-                    SELECT topic_id FROM "Topic" WHERE display_name = :name
-                """), {"name": t_name}).fetchone()
-                
-                if t_row:
-                    primary_topic_uuid = t_row[0]
-                    conn.execute(text("""
-                        UPDATE "Topic"
-                        SET subject_area_id = COALESCE(subject_area_id, :area_id),
-                            subject_category_id = COALESCE(subject_category_id, :cat_id),
-                            score = :score
-                        WHERE topic_id = :topic_id
-                    """), {
-                        "area_id": subject_area_id,
-                        "cat_id": subject_category_id,
-                        "score": t_score,
-                        "topic_id": primary_topic_uuid
-                    })
+            with cache_lock:
+                if t_name in topic_cache:
+                    primary_topic_uuid = topic_cache[t_name]
                 else:
-                    primary_topic_uuid = conn.execute(text("""
-                        INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
-                        VALUES (:name, :score, :area_id, :cat_id)
-                        RETURNING topic_id
-                    """), {
-                        "name": t_name, 
-                        "score": t_score,
-                        "area_id": subject_area_id,
-                        "cat_id": subject_category_id
-                    }).scalar()
-                topic_cache[t_name] = primary_topic_uuid
+                    primary_topic_uuid = get_or_create_topic(
+                        conn, t_name, t_score, field_name, subfield_name
+                    )
+                    topic_cache[t_name] = primary_topic_uuid
                     
     # 3. Chèn hoặc cập nhật thông tin bài báo (Article)
     citation_count = work.get("cited_by_count")
@@ -1263,23 +1255,11 @@ def _db_process_single_work(
         kw_name = kw.get("display_name")
         kw_score = kw.get("score", 0.0)
         if kw_name:
-            with cache_lock:
-                if kw_name in keyword_cache:
-                    kw_uuid = keyword_cache[kw_name]
-                else:
-                    kw_row = conn.execute(text("""
-                        SELECT keyword_id FROM "Keyword" WHERE display_name = :name
-                    """), {"name": kw_name}).fetchone()
-
-                    if kw_row:
-                        kw_uuid = kw_row[0]
-                    else:
-                        kw_uuid = conn.execute(text("""
-                            INSERT INTO "Keyword" (display_name)
-                            VALUES (:name)
-                            RETURNING keyword_id
-                        """), {"name": kw_name}).scalar()
-                    keyword_cache[kw_name] = kw_uuid
+            if kw_name in keyword_cache:
+                kw_uuid = keyword_cache[kw_name]
+            else:
+                kw_uuid = get_or_create_keyword(conn, kw_name)
+                keyword_cache[kw_name] = kw_uuid
 
             conn.execute(text("""
                 INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
@@ -1309,39 +1289,9 @@ def _db_process_single_work(
             if t_name in topic_cache:
                 sub_topic_uuid = topic_cache[t_name]
             else:
-                subject_area_id, subject_category_id = get_or_create_subject_info(
-                    conn, field_name, subfield_name
+                sub_topic_uuid = get_or_create_topic(
+                    conn, t_name, t_score, field_name, subfield_name
                 )
-
-                sub_t_row = conn.execute(text("""
-                    SELECT topic_id FROM "Topic" WHERE display_name = :name
-                """), {"name": t_name}).fetchone()
-
-                if sub_t_row:
-                    sub_topic_uuid = sub_t_row[0]
-                    conn.execute(text("""
-                        UPDATE "Topic"
-                        SET subject_area_id = COALESCE(subject_area_id, :area_id),
-                            subject_category_id = COALESCE(subject_category_id, :cat_id),
-                            score = :score
-                        WHERE topic_id = :topic_id
-                    """), {
-                        "area_id": subject_area_id,
-                        "cat_id": subject_category_id,
-                        "score": t_score,
-                        "topic_id": sub_topic_uuid
-                    })
-                else:
-                    sub_topic_uuid = conn.execute(text("""
-                        INSERT INTO "Topic" (display_name, score, subject_area_id, subject_category_id)
-                        VALUES (:name, :score, :area_id, :cat_id)
-                        RETURNING topic_id
-                    """), {
-                        "name": t_name,
-                        "score": t_score,
-                        "area_id": subject_area_id,
-                        "cat_id": subject_category_id
-                    }).scalar()
                 topic_cache[t_name] = sub_topic_uuid
 
         conn.execute(text("""
@@ -1391,25 +1341,26 @@ def sync_works(limit: int, journal_offset: int = 0):
 
     print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
 
-    # Cache toàn cục trong suốt lượt chạy sync_works, dùng chung giữa các luồng.
-    # cache_lock bảo vệ việc get-or-create Author/Keyword/Topic để tránh 2 luồng
-    # cùng tạo trùng 1 bản ghi mới (race condition) khi chạy song song.
-    topic_cache = {}          # key: display_name -> topic_id
-    author_id_cache = {}      # key: openalex_id -> author_id
-    author_orcid_cache = {}   # key: orcid -> author_id
-    author_name_cache = {}    # key: display_name -> author_id
-    keyword_cache = {}        # key: display_name -> keyword_id
     cache_lock = threading.Lock()
 
     total = total_journals
     synced_works_count = 0
     consecutive_429 = 0
-    max_workers = 10
+    any_failed = False
+    # Subject/topic rows share unique indexes across journals. Keep database
+    # writes deterministic by default; increase only after verifying the DB.
+    max_workers = max(1, int(os.getenv("OPENALEX_WORKERS", "1")))
+    print(f"[sync-works] Database workers: {max_workers}")
 
     def _process_one_journal(idx, journal):
         journal_uuid, openalex_id, journal_name = journal
 
         # Cache cục bộ cho tạp chí hiện tại (khong chia se giua cac thread)
+        topic_cache = {}      # key: display_name -> topic_id
+        keyword_cache = {}    # key: display_name -> keyword_id
+        author_id_cache = {}  # key: openalex_id -> author_id
+        author_orcid_cache = {}  # key: orcid -> author_id
+        author_name_cache = {}  # key: display_name -> author_id
         volume_cache = {}  # key: (volume_number, publication_year) -> volume_id
         issue_cache = {}   # key: (volume_id, issue_number, publication_year) -> issue_id
 
@@ -1418,10 +1369,11 @@ def sync_works(limit: int, journal_offset: int = 0):
         clean_id = openalex_id.split("/")[-1]
 
         if limit:
-            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page={limit}"
+            page_size = min(limit, 100)
+            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page={page_size}"
             cursor_mode = False
         else:
-            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page=200&cursor=*"
+            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page=100&cursor=*"
             cursor_mode = True
 
         local_synced = 0
@@ -1444,7 +1396,14 @@ def sync_works(limit: int, journal_offset: int = 0):
 
                 response = safe_get(current_url, timeout=15)
                 if response.status_code != 200:
-                    print(f"  -> [{idx}] FAILED to fetch works: HTTP {response.status_code}")
+                    detail = ""
+                    try:
+                        error_data = response.json()
+                        detail = error_data.get("message") or error_data.get("error") or ""
+                    except Exception:
+                        detail = getattr(response, "text", "")[:300]
+                    suffix = f" ({detail})" if detail else ""
+                    print(f"  -> [{idx}] FAILED to fetch works: HTTP {response.status_code}{suffix}")
                     sync_success = False
                     if response.status_code == 429:
                         has_429 = True
@@ -1463,14 +1422,26 @@ def sync_works(limit: int, journal_offset: int = 0):
 
                 print(f"  -> [{idx}] Processing {len(works)} works on page {page_idx}...")
 
-                with engine.begin() as conn:
-                    for work in works:
+                page_started = time.monotonic()
+                # Different journals have independent article/volume/issue data,
+                # so let their page transactions run concurrently. Shared entities
+                # are protected by cache_lock inside _db_process_single_work.
+                for work_number, work in enumerate(works, start=1):
+                    # Commit each work independently so a shared topic/author lock
+                    # cannot be held for the lifetime of an entire page.
+                    with engine.begin() as conn:
                         _db_process_single_work(
                             conn, work, journal_uuid,
                             topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
                             keyword_cache, volume_cache, issue_cache, cache_lock
                         )
-                        local_synced += 1
+                    local_synced += 1
+                    if work_number % 10 == 0 or work_number == len(works):
+                        print(
+                            f"  -> [{idx}] Processed {work_number}/{len(works)} works "
+                            f"({time.monotonic() - page_started:.1f}s)",
+                            flush=True,
+                        )
 
                 if not cursor_mode:
                     break
@@ -1507,6 +1478,8 @@ def sync_works(limit: int, journal_offset: int = 0):
         for future in as_completed(futures):
             local_synced, sync_success, has_429 = future.result()
             synced_works_count += local_synced
+            if not sync_success:
+                any_failed = True
 
             if sync_success:
                 consecutive_429 = 0
@@ -1520,7 +1493,13 @@ def sync_works(limit: int, journal_offset: int = 0):
             else:
                 consecutive_429 = 0
 
-    print(f"\n[sync-works] Finished! Total synced works/articles: {synced_works_count}")
+    if consecutive_429 or any_failed:
+        print(
+            f"\n[sync-works] Finished with errors. Total synced works/articles: "
+            f"{synced_works_count}"
+        )
+    else:
+        print(f"\n[sync-works] Finished! Total synced works/articles: {synced_works_count}")
 
 
 def cmd_stats_works():

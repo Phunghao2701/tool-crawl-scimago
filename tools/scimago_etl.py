@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from decimal import Decimal, InvalidOperation
 
@@ -27,7 +28,7 @@ load_dotenv(dotenv_path, override=True)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
+    "postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse",
 )
 
 SCIMAGO_DEFAULT_URL = "https://www.scimagojr.com/journalrank.php?out=xls"
@@ -462,6 +463,47 @@ def bulk_insert_raw_sql(conn, table_name, columns, rows, on_conflict_clause=""):
     conn.execute(text(sql), params)
 
 
+def bulk_upsert_rankings(conn, rows):
+    """Insert rankings while matching the existing expression index."""
+    if not rows:
+        return
+
+    columns = [
+        "journal_id", "subject_category_id", "metric_id", "year",
+        "value_txt", "value_int", "value_float",
+    ]
+    cols_str = ", ".join(f'"{column}"' for column in columns)
+    values_runs = []
+    params = {}
+    for index, row in enumerate(rows):
+        placeholders = []
+        for column in columns:
+            parameter = f"ranking_{column}_{index}"
+            placeholders.append(f":{parameter}")
+            params[parameter] = row.get(column)
+        values_runs.append(f"({', '.join(placeholders)})")
+
+    sql = f"""
+        WITH incoming ({cols_str}) AS (
+            VALUES {', '.join(values_runs)}
+        )
+        INSERT INTO "Journal_Ranking" ({cols_str})
+        SELECT incoming.*
+        FROM incoming
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM "Journal_Ranking" existing
+            WHERE existing.journal_id = incoming.journal_id
+              AND existing.metric_id = incoming.metric_id
+              AND existing.year = incoming.year
+              AND coalesce(existing.value_txt, '') = coalesce(incoming.value_txt, '')
+              AND coalesce(existing.value_int, 0) = coalesce(incoming.value_int, 0)
+              AND coalesce(existing.value_float, 0) = coalesce(incoming.value_float, 0)
+        )
+    """
+    conn.execute(text(sql), params)
+
+
 def bulk_update_journals_sql(conn, rows):
     """
     Thực hiện bulk update cho bảng Journal bằng cách sử dụng UPDATE ... FROM (VALUES ...)
@@ -582,6 +624,23 @@ def normalize(engine, raw_rows: list[dict], year: int):
         publisher_cache = {}
         for row in conn.execute(text('SELECT publisher_id, display_name FROM "Publisher"')).fetchall():
             publisher_cache[row[1]] = row[0]
+
+        # Resolve all publishers in one round-trip instead of one upsert per journal.
+        publisher_rows = [
+            {"display_name": str(name).strip()}
+            for name in {raw.get("publisher", "") for raw in raw_rows}
+            if str(name).strip()
+        ]
+        if publisher_rows:
+            bulk_insert_raw_sql(
+                conn,
+                "Publisher",
+                ["display_name"],
+                publisher_rows,
+                "ON CONFLICT (display_name) DO NOTHING",
+            )
+            for row in conn.execute(text('SELECT publisher_id, display_name FROM "Publisher"')).fetchall():
+                publisher_cache[row[1]] = row[0]
             
         subject_area_cache = {}
         for row in conn.execute(text('SELECT subject_area_id, display_name FROM "Subject_Area"')).fetchall():
@@ -613,8 +672,9 @@ def normalize(engine, raw_rows: list[dict], year: int):
         journals_to_update = []
 
         print("[normalize] Pass 1: Resolving references and preparing journal data...")
+        pass1_started = time.monotonic()
         # PASS 1: Chuẩn bị dữ liệu Journal để bulk insert/update
-        for raw in raw_rows:
+        for row_number, raw in enumerate(raw_rows, start=1):
             src_id = (raw["source_id"] or "").strip()
             title  = (raw["title"] or "").strip()
             if not src_id or not title:
@@ -634,10 +694,18 @@ def normalize(engine, raw_rows: list[dict], year: int):
             region_id = zone_cache[region_key]
 
             # Publisher upsert with cache
-            pub_val = raw["publisher"]
+            pub_val = (raw["publisher"] or "").strip()
             if pub_val not in publisher_cache:
                 publisher_cache[pub_val] = upsert_publisher(conn, pub_val)
             pub_id = publisher_cache[pub_val]
+
+            if row_number % 1000 == 0 or row_number == total_rows:
+                elapsed = time.monotonic() - pass1_started
+                print(
+                    f"[normalize] Pass 1 progress: {row_number}/{total_rows} "
+                    f"({(row_number * 100) // total_rows}%, {elapsed:.1f}s)",
+                    flush=True,
+                )
 
             # Tra cứu journal_id từ cache bộ nhớ
             existing_jid = None
@@ -715,11 +783,59 @@ def normalize(engine, raw_rows: list[dict], year: int):
 
         # PASS 2: Thu thập thông tin link Subject Category và Rankings
         print("[normalize] Pass 2: Building subject categories and ranking metrics...")
+
+        # Resolve subject areas and categories in bulk before building links.
+        area_rows = [
+            {"display_name": area_name}
+            for area_name in {
+                area
+                for raw in raw_rows
+                for area in (parse_areas(raw.get("areas")) or ["General"])
+            }
+            if area_name.strip()
+        ]
+        if area_rows:
+            bulk_insert_raw_sql(
+                conn,
+                "Subject_Area",
+                ["display_name"],
+                area_rows,
+                "ON CONFLICT (display_name) DO NOTHING",
+            )
+            for row in conn.execute(text('SELECT subject_area_id, display_name FROM "Subject_Area"')).fetchall():
+                subject_area_cache[row[1]] = row[0]
+
+        category_rows = set()
+        for raw in raw_rows:
+            categories = parse_categories(raw["categories"])
+            areas = parse_areas(raw.get("areas")) or ["General"]
+            for cat_idx, cat in enumerate(categories):
+                area_names = [areas[cat_idx]] if len(areas) == len(categories) else areas
+                for area_name in area_names:
+                    area_id = subject_area_cache.get(area_name)
+                    if area_id is not None:
+                        category_rows.add((area_id, cat["name"].strip()))
+
+        if category_rows:
+            bulk_insert_raw_sql(
+                conn,
+                "Subject_Category",
+                ["subject_area_id", "display_name"],
+                [
+                    {"subject_area_id": area_id, "display_name": category_name}
+                    for area_id, category_name in category_rows
+                ],
+                "ON CONFLICT (subject_area_id, display_name) DO NOTHING",
+            )
+            for row in conn.execute(text('SELECT subject_category_id, subject_area_id, display_name FROM "Subject_Category"')).fetchall():
+                subject_category_cache[(row[1], row[2])] = row[0]
+
         subject_links_to_insert = []
         rankings_to_insert = []
 
         ok = skipped = 0
-        for raw in raw_rows:
+        pass2_started = time.monotonic()
+        for row_number, raw in enumerate(raw_rows, start=1):
             src_id = (raw["source_id"] or "").strip()
             title  = (raw["title"] or "").strip()
             if not src_id or not title:
@@ -753,14 +869,10 @@ def normalize(engine, raw_rows: list[dict], year: int):
                 area_names = [areas[cat_idx]] if len(areas) == len(categories) else areas
 
                 for area_name in area_names:
-                    if area_name not in subject_area_cache:
-                        subject_area_cache[area_name] = upsert_subject_area(conn, area_name)
                     area_id = subject_area_cache[area_name]
 
                     cat_name = cat["name"]
                     cat_key = (area_id, cat_name)
-                    if cat_key not in subject_category_cache:
-                        subject_category_cache[cat_key] = upsert_subject_category(conn, area_id, cat_name)
                     cat_id = subject_category_cache[cat_key]
 
                     # Link category
@@ -808,8 +920,13 @@ def normalize(engine, raw_rows: list[dict], year: int):
             add_num_rank("REF_PER_DOC", "ref_doc", "float")
 
             ok += 1
-            if ok % 5000 == 0 or ok == total_rows:
-                print(f"[normalize] Prepared {ok}/{total_rows} journals ({(ok * 100) // total_rows}%)")
+            if row_number % 1000 == 0 or row_number == total_rows:
+                elapsed = time.monotonic() - pass2_started
+                print(
+                    f"[normalize] Pass 2 progress: {row_number}/{total_rows} "
+                    f"({(row_number * 100) // total_rows}%, {elapsed:.1f}s)",
+                    flush=True,
+                )
 
         # Thực thi Bulk Insert cho Journal_Subject_Category
         if subject_links_to_insert:
@@ -818,6 +935,8 @@ def normalize(engine, raw_rows: list[dict], year: int):
             for i in range(0, len(subject_links_to_insert), batch_size):
                 batch = subject_links_to_insert[i:i+batch_size]
                 bulk_insert_raw_sql(conn, "Journal_Subject_Category", ["journal_id", "subject_category_id"], batch, "ON CONFLICT DO NOTHING")
+                if (i + len(batch)) % 20000 == 0 or i + len(batch) == len(subject_links_to_insert):
+                    print(f"[normalize] Category links: {i + len(batch)}/{len(subject_links_to_insert)}", flush=True)
 
         # Thực thi Bulk Insert cho Journal_Ranking
         if rankings_to_insert:
@@ -839,19 +958,12 @@ def normalize(engine, raw_rows: list[dict], year: int):
             rankings_to_insert = unique_rankings
 
             print(f"[normalize] Inserting {len(rankings_to_insert)} journal rankings...")
-            on_conflict = """
-                ON CONFLICT (journal_id, metric_id, year, 
-                             (coalesce(value_txt, ''::character varying)), 
-                             (coalesce(value_int, 0)), 
-                             (coalesce(value_float, (0)::double precision)))
-                DO UPDATE SET 
-                    subject_category_id = EXCLUDED.subject_category_id,
-                    created_at = EXCLUDED.created_at
-            """
             batch_size = 1000
             for i in range(0, len(rankings_to_insert), batch_size):
                 batch = rankings_to_insert[i:i+batch_size]
-                bulk_insert_raw_sql(conn, "Journal_Ranking", ["journal_id", "subject_category_id", "metric_id", "year", "value_txt", "value_int", "value_float"], batch, on_conflict)
+                bulk_upsert_rankings(conn, batch)
+                if (i + len(batch)) % 20000 == 0 or i + len(batch) == len(rankings_to_insert):
+                    print(f"[normalize] Rankings: {i + len(batch)}/{len(rankings_to_insert)}", flush=True)
 
             # Thực thi Bulk Insert cho Journal_Ranking_Subject_Category chỉ trong 1 câu SQL duy nhất!
             print("[normalize] Linking journal rankings with categories...")

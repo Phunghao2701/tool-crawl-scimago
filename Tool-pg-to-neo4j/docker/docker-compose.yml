@@ -60,6 +60,10 @@ services:
     env_file:
       - ../.env
 
+    environment:
+      POSTGRES_HOST: postgres
+      NEO4J_URI: bolt://neo4j:7687
+
     depends_on:
       postgres:
         condition: service_started

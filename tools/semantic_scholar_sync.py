@@ -28,7 +28,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db",
+    "postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse",
 )
 SEMANTIC_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
 SEMANTIC_BASE_URL = os.getenv(

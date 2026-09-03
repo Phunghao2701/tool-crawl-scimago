@@ -1,0 +1,720 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, uuid_ossp(map: "uuid-ossp"), vector, pg_trgm]
+  schemas    = ["pipeline", "public"]
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Article {
+  article_id                          BigInt                     @id @default(autoincrement())
+  version                             String?                    @db.VarChar
+  issue_id                            BigInt?
+  title                               String                     @db.VarChar
+  abstract                            String?                    @db.VarChar
+  publication_year                    Int?
+  doi                                 String?                    @db.VarChar
+  primary_topic                       BigInt?
+  semantic_scholar_id                 String?                    @db.VarChar
+  citation_count                      BigInt?
+  semantic_influential_citation_count BigInt?
+  semantic_external_ids               Json?
+  semantic_tldr                       String?                    @db.VarChar
+  references                          Json?
+  reference_count                     BigInt?
+  created_at                          DateTime?                  @default(now()) @db.Timestamp(6)
+  is_deleted                          Boolean?                   @default(false)
+  embedding                           Unsupported("vector")?
+  Issue                               Issue?                     @relation(fields: [issue_id], references: [issue_id], onDelete: NoAction, onUpdate: NoAction)
+  Topic                               Topic?                     @relation(fields: [primary_topic], references: [topic_id], onDelete: NoAction, onUpdate: NoAction)
+  Author_Article                      Author_Article[]
+  Keyword_Article                     Keyword_Article[]
+  Project_Article_Bookmark            Project_Article_Bookmark[]
+  Sub_Topic                           Sub_Topic[]
+
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "idx_article_title_trgm")
+  @@index([abstract(ops: raw("gin_trgm_ops"))], type: Gin, map: "idx_article_abstract_trgm")
+  @@index([publication_year], map: "idx_article_pub_year")
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model Author {
+  author_id                 BigInt               @id @default(autoincrement())
+  orcid                     String?              @unique @db.VarChar
+  display_name              String?              @db.VarChar
+  url_image                 String?              @db.VarChar
+  openalex_id               String?              @unique @db.VarChar
+  works_count               BigInt?
+  cited_by_count            BigInt?
+  h_index                   BigInt?
+  i10_index                 BigInt?
+  last_known_institution    String?              @db.VarChar
+  last_known_institution_id String?              @db.VarChar
+  created_at                DateTime?            @default(now()) @db.Timestamp(6)
+  is_deleted                Boolean?             @default(false)
+  Author_Article            Author_Article[]
+  Institution_Author        Institution_Author[]
+
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Author_Article {
+  author_id  BigInt
+  article_id BigInt
+  Article    Article @relation(fields: [article_id], references: [article_id], onDelete: NoAction, onUpdate: NoAction)
+  Author     Author  @relation(fields: [author_id], references: [author_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([author_id, article_id])
+  @@schema("public")
+}
+
+model Institution {
+  institution_id     BigInt               @id @default(autoincrement())
+  openalex_id        String?              @unique @db.VarChar
+  display_name       String               @db.VarChar
+  country_code       String?              @db.VarChar
+  type               String?              @db.VarChar
+  created_at         DateTime?            @default(now()) @db.Timestamp(6)
+  is_deleted         Boolean?             @default(false)
+  Institution_Author Institution_Author[]
+
+  @@index([country_code, type], map: "idx_institution_country_type")
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Institution_Author {
+  author_id      BigInt
+  institution_id BigInt
+  year           Int
+  Author         Author      @relation(fields: [author_id], references: [author_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_institution_author_author")
+  Institution    Institution @relation(fields: [institution_id], references: [institution_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_institution_author_institution")
+
+  @@id([author_id, institution_id, year])
+  @@index([institution_id], map: "idx_institution_author_institution")
+  @@index([year], map: "idx_institution_author_year")
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Issue {
+  issue_id         BigInt    @id @default(autoincrement())
+  volume_id        BigInt?
+  issue_number     String?   @db.VarChar
+  publication_year Int?
+  is_deleted       Boolean?  @default(false)
+  Article          Article[]
+  Volume           Volume?   @relation(fields: [volume_id], references: [volume_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Journal {
+  journal_id                 BigInt                     @id @default(autoincrement())
+  source_id                  String?                    @db.VarChar
+  publisher_id               BigInt?
+  country                    BigInt?
+  region                     BigInt?
+  display_name               String                     @db.VarChar
+  type                       String?                    @db.VarChar
+  is_open_access             Boolean?
+  is_oa_diamond              Boolean?
+  coverage                   String?                    @db.VarChar
+  issn                       String?                    @db.VarChar
+  created_at                 DateTime?                  @default(now()) @db.Timestamp(6)
+  is_deleted                 Boolean?                   @default(false)
+  Zone_Journal_countryToZone Zone?                      @relation("Journal_countryToZone", fields: [country], references: [zone_id], onDelete: NoAction, onUpdate: NoAction)
+  Publisher                  Publisher?                 @relation(fields: [publisher_id], references: [publisher_id], onDelete: NoAction, onUpdate: NoAction)
+  Zone_Journal_regionToZone  Zone?                      @relation("Journal_regionToZone", fields: [region], references: [zone_id], onDelete: NoAction, onUpdate: NoAction)
+  Journal_Ranking            Journal_Ranking[]
+  Journal_Subject_Category   Journal_Subject_Category[]
+  Project_Journal            Project_Journal[]
+  Volume                     Volume[]
+
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model Journal_Ranking {
+  journal_ranking_id               BigInt                             @id @default(autoincrement())
+  journal_id                       BigInt
+  subject_category_id              BigInt?
+  metric_id                        BigInt
+  year                             Int
+  value_txt                        String?                            @db.VarChar
+  value_int                        Int?
+  value_float                      Float?
+  created_at                       DateTime?                          @default(now()) @db.Timestamp(6)
+  Journal                          Journal                            @relation(fields: [journal_id], references: [journal_id], onDelete: NoAction, onUpdate: NoAction)
+  Ranking_Metric                   Ranking_Metric                     @relation(fields: [metric_id], references: [metric_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category                 Subject_Category?                  @relation(fields: [subject_category_id], references: [subject_category_id], onDelete: NoAction, onUpdate: NoAction)
+  Journal_Ranking_Subject_Category Journal_Ranking_Subject_Category[]
+
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Journal_Ranking_Subject_Category {
+  journal_ranking_id  BigInt
+  subject_category_id BigInt
+  Journal_Ranking     Journal_Ranking  @relation(fields: [journal_ranking_id], references: [journal_ranking_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category    Subject_Category @relation(fields: [subject_category_id], references: [subject_category_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([journal_ranking_id, subject_category_id])
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Journal_Subject_Category {
+  journal_id          BigInt
+  subject_category_id BigInt
+  Journal             Journal          @relation(fields: [journal_id], references: [journal_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category    Subject_Category @relation(fields: [subject_category_id], references: [subject_category_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([journal_id, subject_category_id])
+  @@schema("public")
+}
+
+model Keyword {
+  keyword_id      BigInt            @id @default(autoincrement())
+  display_name    String?           @unique @db.VarChar
+  Keyword_Article Keyword_Article[]
+  Project_Keyword Project_Keyword[]
+
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Keyword_Article {
+  keyword_id BigInt
+  article_id BigInt
+  score      Float?
+  Article    Article @relation(fields: [article_id], references: [article_id], onDelete: NoAction, onUpdate: NoAction)
+  Keyword    Keyword @relation(fields: [keyword_id], references: [keyword_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([keyword_id, article_id])
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Password_Reset_Token {
+  token_id   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  token_hash String    @db.VarChar(255)
+  expires_at DateTime  @db.Timestamp(6)
+  used_at    DateTime? @db.Timestamp(6)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  user       user      @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([token_hash], map: "idx_prt_token_hash")
+  @@index([user_id], map: "idx_prt_user_id")
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Project {
+  project_id               BigInt                     @id @default(autoincrement())
+  user_id                  String?                    @db.Uuid
+  subject_area             BigInt?
+  title                    String?                    @db.VarChar
+  created_at               DateTime?                  @default(now()) @db.Timestamp(6)
+  status                   String?                    @default("INACTIVE") @db.VarChar(50)
+  Subject_Area             Subject_Area?              @relation(fields: [subject_area], references: [subject_area_id], onDelete: NoAction, onUpdate: NoAction)
+  user                     user?                      @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
+  Project_Article_Bookmark Project_Article_Bookmark[]
+  Project_Chat_Message     Project_Chat_Message[]
+  Project_Journal          Project_Journal[]
+  Project_Keyword          Project_Keyword[]
+  Project_Member           Project_Member[]
+  Subject_Category_Project Subject_Category_Project[]
+
+  @@schema("public")
+}
+
+model Project_Article_Bookmark {
+  project_id BigInt
+  article_id BigInt
+  user_id    String    @db.Uuid
+  added_at   DateTime? @default(now()) @db.Timestamp(6)
+  Article    Article   @relation(fields: [article_id], references: [article_id], onDelete: Cascade, onUpdate: NoAction, map: "FK_Project_Article_Article")
+  Project    Project   @relation(fields: [project_id], references: [project_id], onDelete: Cascade, onUpdate: NoAction, map: "FK_Project_Article_Project")
+  user       user      @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "FK_Project_Article_User")
+
+  @@id([project_id, article_id, user_id], map: "PK_Project_Article_Bookmark")
+  @@schema("public")
+}
+
+model Project_Chat_Message {
+  message_id        BigInt         @id @default(autoincrement())
+  project_id        BigInt
+  role              message_role
+  content           String
+  model             String?        @db.VarChar(100)
+  prompt_tokens     Int?           @default(0)
+  completion_tokens Int?           @default(0)
+  total_tokens      Int?           @default(0)
+  latency_ms        Int?
+  status            message_status @default(COMPLETED)
+  created_at        DateTime       @default(now()) @db.Timestamp(6)
+  user_id           String?        @db.Uuid
+  Project           Project        @relation(fields: [project_id], references: [project_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_chat_message_project")
+  user              user?          @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_chat_message_user")
+
+  @@index([project_id, created_at], map: "idx_project_chat_message_project_created")
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Project_Journal {
+  project_id BigInt
+  journal_id BigInt
+  Journal    Journal @relation(fields: [journal_id], references: [journal_id], onDelete: NoAction, onUpdate: NoAction)
+  Project    Project @relation(fields: [project_id], references: [project_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([project_id, journal_id])
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Project_Keyword {
+  project_id BigInt
+  keyword_id BigInt
+  Keyword    Keyword @relation(fields: [keyword_id], references: [keyword_id], onDelete: NoAction, onUpdate: NoAction)
+  Project    Project @relation(fields: [project_id], references: [project_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([project_id, keyword_id])
+  @@schema("public")
+}
+
+model Project_Member {
+  project_member_id                    BigInt                @id @default(autoincrement())
+  project_id                           BigInt
+  user_id                              String                @db.Uuid
+  role                                 project_member_role   @default(MEMBER)
+  status                               project_member_status @default(INVITED)
+  invited_by                           String                @db.Uuid
+  invited_at                           DateTime              @default(now()) @db.Timestamp(6)
+  accepted_at                          DateTime?             @db.Timestamp(6)
+  removed_at                           DateTime?             @db.Timestamp(6)
+  user_Project_Member_invited_byTouser user                  @relation("Project_Member_invited_byTouser", fields: [invited_by], references: [user_id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pm_invited_by")
+  Project                              Project               @relation(fields: [project_id], references: [project_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pm_project")
+  user_Project_Member_user_idTouser    user                  @relation("Project_Member_user_idTouser", fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pm_user")
+
+  @@unique([project_id, user_id], map: "uq_project_member")
+  @@index([project_id], map: "idx_pm_project")
+  @@index([status], map: "idx_pm_status")
+  @@index([user_id], map: "idx_pm_user")
+  @@schema("public")
+}
+
+model Publisher {
+  publisher_id BigInt    @id @default(autoincrement())
+  display_name String?   @unique(map: "uq_publisher_display_name") @db.VarChar
+  image_url    String?   @db.VarChar
+  created_at   DateTime? @default(now()) @db.Timestamp(6)
+  is_deleted   Boolean   @default(false)
+  Journal      Journal[]
+
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model Ranking_Metric {
+  metric_id       BigInt               @id @default(autoincrement())
+  code            String?              @unique @db.VarChar
+  display_name    String?              @db.VarChar
+  metric_type     ranking_metric_type?
+  description     String?              @db.VarChar
+  Journal_Ranking Journal_Ranking[]
+
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Sub_Topic {
+  article_id BigInt
+  topic_id   BigInt
+  Article    Article @relation(fields: [article_id], references: [article_id], onDelete: NoAction, onUpdate: NoAction)
+  Topic      Topic   @relation(fields: [topic_id], references: [topic_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([article_id, topic_id])
+  @@schema("public")
+}
+
+model Subject_Area {
+  subject_area_id  BigInt             @id @default(autoincrement())
+  display_name     String?            @unique(map: "uq_subject_area_name") @db.VarChar
+  description      String?            @db.VarChar
+  is_deleted       Boolean?           @default(false)
+  Project          Project[]
+  Subject_Category Subject_Category[]
+  Topic            Topic[]
+
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Subject_Category {
+  subject_category_id              BigInt                             @id @default(autoincrement())
+  subject_area_id                  BigInt?
+  display_name                     String?                            @db.VarChar
+  description                      String?                            @db.VarChar
+  is_deleted                       Boolean?                           @default(false)
+  Journal_Ranking                  Journal_Ranking[]
+  Journal_Ranking_Subject_Category Journal_Ranking_Subject_Category[]
+  Journal_Subject_Category         Journal_Subject_Category[]
+  Subject_Area                     Subject_Area?                      @relation(fields: [subject_area_id], references: [subject_area_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category_Project         Subject_Category_Project[]
+  Topic                            Topic[]
+
+  @@unique([subject_area_id, display_name], map: "uq_subject_category_area_name")
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Subject_Category_Project {
+  project_id          BigInt
+  subject_category_id BigInt
+  Project             Project          @relation(fields: [project_id], references: [project_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category    Subject_Category @relation(fields: [subject_category_id], references: [subject_category_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([project_id, subject_category_id])
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Topic {
+  topic_id            BigInt            @id @default(autoincrement())
+  display_name        String?           @unique @db.VarChar
+  score               Float?
+  subject_area_id     BigInt?
+  subject_category_id BigInt?
+  is_deleted          Boolean?          @default(false)
+  Article             Article[]
+  Sub_Topic           Sub_Topic[]
+  Subject_Area        Subject_Area?     @relation(fields: [subject_area_id], references: [subject_area_id], onDelete: NoAction, onUpdate: NoAction)
+  Subject_Category    Subject_Category? @relation(fields: [subject_category_id], references: [subject_category_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This model has constraints using non-default deferring rules and requires additional setup for migrations. Visit https://pris.ly/d/constraint-deferring for more info.
+model Volume {
+  volume_id        BigInt   @id @default(autoincrement())
+  journal_id       BigInt?
+  volume_number    Int?
+  publication_year Int?
+  is_deleted       Boolean? @default(false)
+  Issue            Issue[]
+  Journal          Journal? @relation(fields: [journal_id], references: [journal_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model Zone {
+  zone_id                       BigInt       @id @default(autoincrement())
+  code                          String?      @db.VarChar
+  name                          String?      @db.VarChar
+  type                          type_zone?
+  iso_code                      String?      @db.VarChar
+  source                        source_zone?
+  created_at                    DateTime?    @default(now()) @db.Timestamp(6)
+  Journal_Journal_countryToZone Journal[]    @relation("Journal_countryToZone")
+  Journal_Journal_regionToZone  Journal[]    @relation("Journal_regionToZone")
+
+  @@unique([name, type], map: "uq_zone_name_type")
+  @@schema("public")
+}
+
+model coin_package {
+  package_id          String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String                @db.VarChar(100)
+  coin_amount         BigInt
+  bonus_coin          BigInt                @default(0)
+  price               Decimal               @db.Decimal(18, 2)
+  currency            String                @default("VND") @db.VarChar(10)
+  is_active           Boolean               @default(true)
+  created_at          DateTime              @default(now()) @db.Timestamp(6)
+  updated_at          DateTime              @default(now()) @db.Timestamp(6)
+  payment_transaction payment_transaction[]
+
+  @@schema("public")
+}
+
+model payment_transaction {
+  transaction_id            String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                   String               @db.Uuid
+  package_id                String?              @db.Uuid
+  amount                    Decimal              @db.Decimal(18, 2)
+  currency                  String               @default("VND") @db.VarChar(10)
+  coin_amount               BigInt
+  bonus_coin                BigInt               @default(0)
+  total_coin                BigInt
+  payment_method            payment_method
+  payment_status            payment_status       @default(pending)
+  provider_transaction_code String?              @db.VarChar(255)
+  note                      String?
+  created_at                DateTime             @default(now()) @db.Timestamp(6)
+  paid_at                   DateTime?            @db.Timestamp(6)
+  coin_package              coin_package?        @relation(fields: [package_id], references: [package_id], onUpdate: NoAction, map: "fk_payment_package")
+  user                      user                 @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_payment_user")
+  wallet_transaction        wallet_transaction[]
+
+  @@index([payment_status], map: "idx_payment_status")
+  @@index([user_id], map: "idx_payment_user")
+  @@schema("public")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model system_log {
+  log_id       BigInt        @id @default(autoincrement())
+  user_id      String?       @db.Uuid
+  user_role    role_account?
+  action       log_action
+  level        log_level     @default(INFO)
+  source       log_source    @default(API)
+  entity_table String?       @db.VarChar(100)
+  entity_id    String?       @db.VarChar(64)
+  message      String?
+  old_data     Json?
+  new_data     Json?
+  metadata     Json?
+  created_at   DateTime      @default(now()) @db.Timestamp(6)
+  user         user?         @relation(fields: [user_id], references: [user_id], onUpdate: NoAction, map: "fk_system_log_user")
+
+  @@index([action], map: "idx_system_log_action")
+  @@index([created_at], map: "idx_system_log_created_at")
+  @@index([entity_table, entity_id], map: "idx_system_log_entity")
+  @@index([user_id], map: "idx_system_log_user_id")
+  @@schema("public")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model user {
+  user_id                                        String                     @id @db.Uuid
+  email                                          String                     @unique @db.VarChar
+  password                                       String?                    @db.VarChar
+  type                                           auth_provider?
+  status                                         status_account?
+  role                                           role_account?
+  last_name                                      String?                    @db.VarChar
+  first_name                                     String?                    @db.VarChar
+  url_image                                      String?                    @db.VarChar
+  date_of_birth                                  DateTime?                  @db.Date
+  gender                                         Boolean?
+  Password_Reset_Token                           Password_Reset_Token[]
+  Project                                        Project[]
+  Project_Article_Bookmark                       Project_Article_Bookmark[]
+  Project_Chat_Message                           Project_Chat_Message[]
+  Project_Member_Project_Member_invited_byTouser Project_Member[]           @relation("Project_Member_invited_byTouser")
+  Project_Member_Project_Member_user_idTouser    Project_Member[]           @relation("Project_Member_user_idTouser")
+  payment_transaction                            payment_transaction[]
+  system_log                                     system_log[]
+  wallet                                         wallet?
+  wallet_transaction                             wallet_transaction[]
+
+  @@schema("public")
+}
+
+model wallet {
+  wallet_id          String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String               @unique @db.Uuid
+  balance            BigInt               @default(0)
+  total_deposit      BigInt               @default(0)
+  total_spent        BigInt               @default(0)
+  created_at         DateTime             @default(now()) @db.Timestamp(6)
+  updated_at         DateTime             @default(now()) @db.Timestamp(6)
+  user               user                 @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wallet_user")
+  wallet_transaction wallet_transaction[]
+
+  @@index([user_id], map: "idx_wallet_user")
+  @@schema("public")
+}
+
+model wallet_transaction {
+  wallet_transaction_id  String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  wallet_id              String                  @db.Uuid
+  user_id                String                  @db.Uuid
+  type                   wallet_transaction_type
+  amount                 BigInt
+  balance_before         BigInt
+  balance_after          BigInt
+  payment_transaction_id String?                 @db.Uuid
+  description            String?
+  created_at             DateTime                @default(now()) @db.Timestamp(6)
+  payment_transaction    payment_transaction?    @relation(fields: [payment_transaction_id], references: [transaction_id], onUpdate: NoAction, map: "fk_wallet_transaction_payment")
+  user                   user                    @relation(fields: [user_id], references: [user_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wallet_transaction_user")
+  wallet                 wallet                  @relation(fields: [wallet_id], references: [wallet_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wallet_transaction_wallet")
+
+  @@index([created_at(sort: Desc)], map: "idx_wallet_transaction_created")
+  @@index([user_id], map: "idx_wallet_transaction_user")
+  @@index([wallet_id], map: "idx_wallet_transaction_wallet")
+  @@schema("public")
+}
+
+enum auth_provider {
+  LOCAL
+  GOOGLE
+
+  @@schema("public")
+}
+
+enum log_action {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  VIEW
+  EXPORT
+  IMPORT
+  ERROR
+  SYSTEM
+  ACTIVATE
+
+  @@schema("public")
+}
+
+enum log_level {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+
+  @@schema("public")
+}
+
+enum log_source {
+  API
+  ADMIN_PANEL
+  SYSTEM
+  CRON
+
+  @@schema("public")
+}
+
+enum message_role {
+  USER
+  ASSISTANT
+  SYSTEM
+
+  @@schema("public")
+}
+
+enum message_status {
+  PENDING
+  COMPLETED
+  ERROR
+
+  @@schema("public")
+}
+
+enum payment_method {
+  vnpay
+  momo
+  bank_transfer
+  stripe
+  paypal
+
+  @@schema("public")
+}
+
+enum payment_status {
+  pending
+  success
+  failed
+  cancelled
+  refunded
+
+  @@schema("public")
+}
+
+enum project_member_role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+
+  @@schema("public")
+}
+
+enum project_member_status {
+  INVITED
+  ACCEPTED
+  REJECTED
+  REMOVED
+
+  @@schema("public")
+}
+
+enum ranking_metric_type {
+  QUARTILE
+  SCORE
+  INTEGER
+
+  @@schema("public")
+}
+
+enum ranking_source {
+  SCOPUS
+  WOS
+  SCIMAGO
+
+  @@schema("public")
+}
+
+enum role_account {
+  STUDENT
+  LECTURER
+  RESEARCHER
+  ADMINISTRATOR
+
+  @@schema("public")
+}
+
+enum source_zone {
+  ISO
+  SCIMAGO
+  OPENALEX
+  INTERNAL
+
+  @@schema("public")
+}
+
+enum status_account {
+  INACTIVE
+  ACTIVE
+  BANNED
+
+  @@schema("public")
+}
+
+enum type_zone {
+  COUNTRY
+  REGION
+
+  @@schema("public")
+}
+
+enum wallet_transaction_type {
+  deposit
+  spend
+  refund
+  admin_adjust
+
+  @@schema("public")
+}
