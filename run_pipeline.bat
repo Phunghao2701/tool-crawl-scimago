@@ -355,8 +355,7 @@ echo     - Dung khi muon dong bo lai hoan toan tu Local.
 echo.
 echo  3. Sync LEGACY Supabase (egyrzaqtmxmcezxchfrl) -^> DB san xuat.
 echo     - Chi dung neu can lay them du lieu con sot lai tren Supabase cu.
-echo     - An toan, chi copy nhung gi chua co (ON CONFLICT DO NOTHING).
-echo.
+echo     - An toan, chi copy nhung gi chua co (ON CONFLICT DO NOTHING).echo.
 echo  4. Quay lai menu chinh.
 echo.
 set /p migrate_mode="Chon (1/2/3/4): "
