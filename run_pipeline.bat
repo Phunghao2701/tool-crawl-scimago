@@ -53,7 +53,7 @@ echo             SCIMAGO AND OPENALEX ETL PIPELINE CONTROL PANEL
 echo ====================================================================
 echo  DB dang dung: %CURRENT_DB%
 echo ====================================================================
-echo  0. Switch DB: Chuyen giua Local Docker va Vercel
+echo  0. Switch DB: Chuyen giua ResearchPulse (100.121.61.95) va Local Docker (5433)
 echo  1. Setup Environment - DB: Cai dat dependencies, Docker, Schema, Seed
 echo  2. Import Scimago Data: Import file Scimago tho tu thu muc data
 echo  3. Sync OpenAlex Journals: Dong bo thong tin tap chi tu OpenAlex API
@@ -64,7 +64,7 @@ echo  R. Backfill References: Lay references chi tiet tu OpenAlex / Semantic
 echo  6. Export Report: Xuat bao cao Excel va CSV
 echo  7. View Database Statistics: Xem so lieu thong ke trong database
 echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
-echo  M. Migrate Local -^> Vercel: Chuyen toan bo data tu Local len Vercel
+echo  M. Migrate Data: Chuyen data tu Local Docker sang ResearchPulse (100.121.61.95)
 echo  N. Sync PostgreSQL -^> Neo4j: Dong bo knowledge graph
 echo  V. Embed Article Vectors: Tao vector embedding trong PostgreSQL
 echo  L. Sync PostgreSQL -^> Meilisearch: Dong bo search indexes
@@ -75,7 +75,7 @@ echo [DEBUG] Lua chon nhan duoc: errorlevel=%errorlevel%
 if errorlevel 16 goto sync_meilisearch
 if errorlevel 15 goto embed_db
 if errorlevel 14 goto sync_neo4j
-if errorlevel 13 goto migrate_to_vercel
+if errorlevel 13 goto migrate_db
 if errorlevel 12 goto backfill_references
 if errorlevel 11 goto sync_semantic
 if errorlevel 10 goto switch_db
@@ -156,13 +156,36 @@ call :check_db
 echo ==========================================
 echo  4. SYNC OPENALEX WORKS
 echo ==========================================
-set w_limit=
-set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 20, nhap 0 de sync TOAN BO): "
-if "%w_limit%"=="" set w_limit=20
-
+echo  1. Standard Sync (20 bai/tap chi - nhanh)
+echo  2. Target 2M Articles (Tu dong cao den moc 2,000,000 bai bao - Khuyen dung)
+echo  3. Custom Limit (Tuy chon so luong theo y muon)
 echo.
-echo [INFO] Bat dau dong bo Bai bao (Works, Topics, Keywords)...
-python tools/openalex_sync.py sync-works --limit %w_limit%
+set w_choice=
+set /p w_choice="Lua chon cua ban (1-3, Mac dinh 2): "
+if "%w_choice%"=="" set w_choice=2
+
+if "%w_choice%"=="1" (
+    echo.
+    echo [INFO] Bat dau dong bo 20 bai viet moi tap chi...
+    python tools/openalex_sync.py sync-works --limit 20
+) else if "%w_choice%"=="2" (
+    echo.
+    echo [INFO] Bat dau dong bo huong den moc 2,000,000 bai bao (Uu tien tap chi chua co bai)...
+    python tools/openalex_sync.py sync-works --limit 70 --target-total 2000000
+) else (
+    echo.
+    set w_limit=
+    set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 70): "
+    if "!w_limit!"=="" set w_limit=70
+    set w_target=
+    set /p w_target="Nhap tong so bai bao can dung (nhan Enter de dung 2,000,000, nhap 0 de khong gioi han): "
+    if "!w_target!"=="" set w_target=2000000
+    if "!w_target!"=="0" (
+        python tools/openalex_sync.py sync-works --limit !w_limit!
+    ) else (
+        python tools/openalex_sync.py sync-works --limit !w_limit! --target-total !w_target!
+    )
+)
 echo.
 echo [OK] Dong bo bai bao hoan tat!
 echo.
@@ -256,6 +279,13 @@ set /p year="Nhap nam du lieu (Mac dinh: 2025): "
 if "%year%"=="" set year=2025
 
 echo.
+echo  Chon che do Pipeline:
+echo  1. Quick Test (Dong bo mau 50 Journals, 20 Works moi Journal)
+echo  2. Full Overnight (Dong bo TOAN BO tap chi, bai bao, tac gia qua dem)
+set /p full_pipeline_mode="Lua chon cua ban (1/2, Mac dinh 1): "
+if "%full_pipeline_mode%"=="" set full_pipeline_mode=1
+
+echo.
 echo [1/3] Dang tien hanh Import Scimago...
 python tools/scimago_etl.py import --file "%filepath%" --year %year%
 if errorlevel 1 (
@@ -265,10 +295,18 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/3] Dang tien hanh dong bo hoa tu OpenAlex API (Tap chi, Tac gia, Bai bao, Topic, Tu khoa)...
-python tools/openalex_sync.py sync --limit 50
-python tools/openalex_sync.py sync-works --limit 20
-python tools/openalex_sync.py sync-authors
+echo [2/3] Dang tien hanh dong bo hoa tu OpenAlex API...
+if "%full_pipeline_mode%"=="2" (
+    echo [INFO] Chay che do FULL qua dem: Khong gioi han so luong...
+    python tools/openalex_sync.py sync
+    python tools/openalex_sync.py sync-works
+    python tools/openalex_sync.py sync-authors
+) else (
+    echo [INFO] Chay che do Quick Test: 50 Journals, 20 Works...
+    python tools/openalex_sync.py sync --limit 50
+    python tools/openalex_sync.py sync-works --limit 20
+    python tools/openalex_sync.py sync-authors --limit 50
+)
 if errorlevel 1 (
     echo [ERROR] Qua trinh dong bo hoa OpenAlex gap loi. Dung pipeline.
     pause
@@ -277,7 +315,11 @@ if errorlevel 1 (
 
 echo.
 echo [2.5/3] Dang tien hanh lam giau du lieu bai bao tu Semantic Scholar API...
-python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit 20
+if "%full_pipeline_mode%"=="2" (
+    python tools/semantic_scholar_sync.py enrich-articles --only-missing
+) else (
+    python tools/semantic_scholar_sync.py enrich-articles --only-missing --limit 20
+)
 
 echo.
 echo [3/3] Dang tien hanh ket xuat tat ca cac bao cao Excel va CSV...
@@ -300,76 +342,56 @@ echo.
 for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB_VAL=%%A
 echo DB hien tai: %CURRENT_DB_VAL%
 echo.
-echo  1. Dung PostgreSQL researchpulse (postgresql://localhost:5432)
-echo  2. Dung DB SAN XUAT (42.96.16.203 - cung DB voi Supabase da migrate)
+echo  1. Dung ResearchPulse Remote (100.121.61.95:5432) - DB Moi
+echo  2. Dung Local Docker DB (localhost:5433) - DB Cu
 echo  3. Giu nguyen, quay lai menu
 echo.
 set /p db_choice="Chon (1/2/3): "
 
 if "%db_choice%"=="1" (
-    echo DATABASE_URL=postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse> .env
+    echo DATABASE_URL=postgresql://postgres:postgres123@100.121.61.95:5432/researchpulse> .env
+    echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
+    echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
     echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
+    echo OPENALEX_RPS=8>> .env
     echo.
-    echo [OK] Da chuyen sang PostgreSQL researchpulse!
+    echo [OK] Da chuyen sang ResearchPulse Remote (100.121.61.95)!
     pause
     goto menu
 )
 if "%db_choice%"=="2" (
-    echo DATABASE_URL=postgresql+psycopg2://admin:SWP391%%40Team2026@42.96.16.203:5432/postgres> .env
+    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
+    echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
+    echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
     echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
     echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
+    echo OPENALEX_RPS=8>> .env
     echo.
-    echo [OK] Da chuyen sang DB SAN XUAT!
-    echo [CANH BAO] Ban dang crawl truc tiep vao DB that dang chay app. Neu muon an toan hon, dung Option 1 (Local) roi dung Option M de migrate sau.
+    echo [OK] Da chuyen sang Local Docker DB (localhost:5433)!
     pause
     goto menu
 )
 goto menu
 
-:migrate_to_vercel
+:migrate_db
 cls
 echo ==========================================
-echo  M. MIGRATE LOCAL -> VERCEL
+echo  M. MIGRATE LOCAL -> RESEARCHPULSE
 echo ==========================================
+echo [INFO] Cong cu se chuyen toan bo du lieu hoc thuat tu Local Docker sang
+echo        CSDL ResearchPulse moi (100.121.61.95:5432).
+echo [INFO] Ho tro khop schema tu dong va reset sequence day du.
 echo.
-echo  Chon che do dong bo:
+echo  1. Bat dau chay Migrate sang ResearchPulse
+echo  2. Quay lai menu chinh
 echo.
-echo  1. INCREMENTAL (Khuyen dung): Chi copy nhung gi chua co tren Vercel.
-echo     - Du lieu da co tren Vercel duoc giu nguyen.
-echo     - Dong bo theo schema moi tren Vercel/Supabase.
-echo     - An toan, khong mat data.
-echo.
-echo  2. FULL RESET: Xoa TOAN BO Vercel roi copy lai tu dau.
-echo     - NGUY HIEM: Toan bo data tren Vercel se bi mat!
-echo     - Dung khi muon dong bo lai hoan toan tu Local.
-echo.
-echo  3. Sync LEGACY Supabase (egyrzaqtmxmcezxchfrl) -^> DB san xuat.
-echo     - Chi dung neu can lay them du lieu con sot lai tren Supabase cu.
-echo     - An toan, chi copy nhung gi chua co (ON CONFLICT DO NOTHING).
-echo.
-echo  4. Quay lai menu chinh.
-echo.
-set /p migrate_mode="Chon (1/2/3/4): "
-echo.
+set /p migrate_mode="Chon (1/2): "
+if not "%migrate_mode%"=="1" goto menu
 
-if "%migrate_mode%"=="1" (
-    echo [INFO] Bat dau INCREMENTAL sync...
-    echo Luu y: .env hien tai van dung LOCAL DB sau khi migrate xong.
-    echo.
-    python tools/migrate_local_to_vercel.py
-)
-if "%migrate_mode%"=="2" (
-    echo [CANH BAO] FULL RESET se XOA TOAN BO du lieu tren Vercel!
-    echo.
-    python tools/migrate_local_to_vercel.py --reset
-)
-if "%migrate_mode%"=="3" (
-    echo [INFO] Bat dau sync tu LEGACY Supabase...
-    echo.
-    python tools/migrate_legacy_supabase.py
-)
-if "%migrate_mode%"=="4" goto menu
+echo.
+echo [INFO] Dang chay tool migrate sang ResearchPulse...
+python tools/migrate_to_researchpulse.py
 echo.
 pause
 goto menu
@@ -847,7 +869,7 @@ echo Tam biet!
 exit /b 0
 
 :check_db
-python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; import pathlib; load_dotenv(pathlib.Path('.env'), override=True); url=os.getenv('DATABASE_URL',''); engine=create_engine(url); conn=engine.connect(); conn.close()" 2>nul
+python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; import pathlib; load_dotenv(pathlib.Path('.env'), override=True); url=os.getenv('DATABASE_URL',''); engine=create_engine(url, connect_args={'connect_timeout': 5}); conn=engine.connect(); conn.close()" 2>nul
 if errorlevel 1 (
     cls
     echo ====================================================================
@@ -856,9 +878,9 @@ if errorlevel 1 (
     echo DB hien tai trong .env:
     findstr /i "DATABASE_URL" .env
     echo.
-    echo Neu dung LOCAL: Kiem tra Docker Desktop da chay chua? Chay Option 1.
-    echo Neu dung VERCEL: Kiem tra ket noi Internet va URL trong .env.
-    echo Co the dung Option 0 de doi sang DB khac.
+    echo Neu dung ResearchPulse: Kiem tra mang WireGuard hoac IP 100.121.61.95.
+    echo Neu dung Local Docker: Kiem tra Docker container dang chay (Option 1).
+    echo Co the dung Option 0 de doi giua cac database.
     echo ====================================================================
     pause
     goto menu

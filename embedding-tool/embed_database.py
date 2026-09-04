@@ -20,10 +20,10 @@ from psycopg2.extras import RealDictCursor
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 ENV_PATH = BASE_DIR / ".env"
-VERCEL_ENV_PATH = REPO_ROOT / ".env.vercel"
+ROOT_ENV_PATH = REPO_ROOT / ".env"
 TOOLS_DIR = REPO_ROOT / "tools"
 
-load_dotenv(VERCEL_ENV_PATH, override=False)
+load_dotenv(ROOT_ENV_PATH, override=False)
 load_dotenv(ENV_PATH, override=False)
 
 if str(TOOLS_DIR) not in sys.path:
@@ -93,8 +93,9 @@ def _bool_env(name: str, default: bool) -> bool:
 def load_settings(
     dimension_override: Optional[int] = None,
 ) -> EmbeddingSettings:
-    """Load and validate embedding configuration from environment variables."""
-    database_url = _required_env("SUPABASE_DB_URL")
+    database_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ValueError(f"Missing required environment variable DATABASE_URL or SUPABASE_DB_URL.")
     dimension = (
         dimension_override
         if dimension_override is not None

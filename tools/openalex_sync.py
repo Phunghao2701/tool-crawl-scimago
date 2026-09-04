@@ -1304,21 +1304,43 @@ def _db_process_single_work(
         })
 
 
-def sync_works(limit: int, journal_offset: int = 0):
+def sync_works(limit: int, journal_offset: int = 0, target_total: int = None, prioritize_empty: bool = True):
     # pool_size du cho toi da 10 thread cung mo transaction (xem ThreadPoolExecutor ben duoi)
     engine = create_engine(
         DATABASE_URL, pool_size=12, max_overflow=6,
         connect_args={"options": "-c statement_timeout=120000"},  # 2 phut, tranh treo vinh vien
     )
 
+    with engine.connect() as conn:
+        current_article_count = conn.execute(text('SELECT count(*) FROM "Article" WHERE is_deleted = false')).scalar()
+
+    print(f"\n[sync-works] Current articles in database: {current_article_count:,}")
+    if target_total:
+        print(f"[sync-works] Target total articles: {target_total:,} (Remaining needed: {max(0, target_total - current_article_count):,})")
+        if current_article_count >= target_total:
+            print(f"[INFO] Target of {target_total:,} articles is already reached or exceeded! Nothing to do.")
+            return
+
     # 1. Lấy danh sách các Journal đã match OpenAlex để đồng bộ bài viết.
-    # created_at là thời điểm tạo record, không còn là works_synced_at marker.
-    query_journals = """
-        SELECT journal_id, source_id, display_name
-        FROM "Journal"
-        WHERE source_id LIKE 'https://openalex.org/%' AND is_deleted = false
-        ORDER BY journal_id ASC
-    """
+    if prioritize_empty:
+        print("[sync-works] Ordering journals to prioritize journals with 0 or fewest articles first...")
+        query_journals = """
+            SELECT j.journal_id, j.source_id, j.display_name, COUNT(a.article_id) as art_count
+            FROM "Journal" j
+            LEFT JOIN "Volume" v ON j.journal_id = v.journal_id
+            LEFT JOIN "Issue" i ON v.volume_id = i.volume_id
+            LEFT JOIN "Article" a ON i.issue_id = a.issue_id AND a.is_deleted = false
+            WHERE j.source_id LIKE 'https://openalex.org/%%' AND j.is_deleted = false
+            GROUP BY j.journal_id, j.source_id, j.display_name
+            ORDER BY art_count ASC, j.journal_id ASC
+        """
+    else:
+        query_journals = """
+            SELECT journal_id, source_id, display_name
+            FROM "Journal"
+            WHERE source_id LIKE 'https://openalex.org/%' AND is_deleted = false
+            ORDER BY journal_id ASC
+        """
     with engine.connect() as conn:
         journals = conn.execute(text(query_journals)).fetchall()
 
@@ -1342,9 +1364,12 @@ def sync_works(limit: int, journal_offset: int = 0):
     print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
 
     cache_lock = threading.Lock()
+    count_lock = threading.Lock()
+    target_reached_event = threading.Event()
 
     total = total_journals
     synced_works_count = 0
+    estimated_total_articles = current_article_count
     consecutive_429 = 0
     any_failed = False
     # Subject/topic rows share unique indexes across journals. Keep database
@@ -1353,7 +1378,11 @@ def sync_works(limit: int, journal_offset: int = 0):
     print(f"[sync-works] Database workers: {max_workers}")
 
     def _process_one_journal(idx, journal):
-        journal_uuid, openalex_id, journal_name = journal
+        if target_reached_event.is_set():
+            return 0, True, False
+
+        journal_uuid, openalex_id, journal_name = journal[0], journal[1], journal[2]
+        art_existing = journal[3] if len(journal) > 3 else 0
 
         # Cache cục bộ cho tạp chí hiện tại (khong chia se giua cac thread)
         topic_cache = {}      # key: display_name -> topic_id
@@ -1364,7 +1393,7 @@ def sync_works(limit: int, journal_offset: int = 0):
         volume_cache = {}  # key: (volume_number, publication_year) -> volume_id
         issue_cache = {}   # key: (volume_id, issue_number, publication_year) -> issue_id
 
-        print(f"[{idx}/{total}] Fetching works for Journal: {journal_name} ({openalex_id})")
+        print(f"[{idx}/{total}] Fetching works for Journal: {journal_name} ({openalex_id}) [Existing: {art_existing}]")
 
         clean_id = openalex_id.split("/")[-1]
 
@@ -1384,6 +1413,9 @@ def sync_works(limit: int, journal_offset: int = 0):
             has_429 = False
 
             while True:
+                if target_reached_event.is_set():
+                    break
+
                 import urllib.parse as urllib_parse
                 # Lich su tranh spam API - OpenAlex polite pool (mailto+api_key) cho phep ~10 req/s.
                 # Chay o nhieu thread nen tong request/s se cao hon 1/0.1s, nhung van trong
@@ -1443,6 +1475,16 @@ def sync_works(limit: int, journal_offset: int = 0):
                             flush=True,
                         )
 
+                # Target check
+                if target_total:
+                    nonlocal estimated_total_articles
+                    with count_lock:
+                        estimated_total_articles += len(works)
+                        if estimated_total_articles >= target_total:
+                            print(f"\n[TARGET REACHED] Approaching target {target_total:,} articles! Stopping gracefully.")
+                            target_reached_event.set()
+                            break
+
                 if not cursor_mode:
                     break
 
@@ -1457,7 +1499,9 @@ def sync_works(limit: int, journal_offset: int = 0):
                 current_url = parsed._replace(query=new_query).geturl()
                 page_idx += 1
 
-            if sync_success:
+            if target_reached_event.is_set():
+                print(f"  -> [{idx}] STOPPED: Target total reached.")
+            elif sync_success:
                 print(f"  -> [{idx}] SUCCESS: Synced all works for Journal: {journal_name}.")
             elif has_429:
                 print(f"  -> [{idx}] SKIPPED: Temporary API rate limit (429). Retaining for next run.")
@@ -1476,6 +1520,11 @@ def sync_works(limit: int, journal_offset: int = 0):
         }
 
         for future in as_completed(futures):
+            if target_reached_event.is_set():
+                print("\n[sync-works] Target reached. Shutting down remaining workers...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+
             local_synced, sync_success, has_429 = future.result()
             synced_works_count += local_synced
             if not sync_success:
@@ -1493,13 +1542,12 @@ def sync_works(limit: int, journal_offset: int = 0):
             else:
                 consecutive_429 = 0
 
-    if consecutive_429 or any_failed:
-        print(
-            f"\n[sync-works] Finished with errors. Total synced works/articles: "
-            f"{synced_works_count}"
-        )
-    else:
-        print(f"\n[sync-works] Finished! Total synced works/articles: {synced_works_count}")
+    with engine.connect() as conn:
+        final_article_count = conn.execute(text('SELECT count(*) FROM "Article" WHERE is_deleted = false')).scalar()
+
+    print("\n" + "=" * 60)
+    print(f"[sync-works] Finished! Total articles in DB: {final_article_count:,} (Session synced: {synced_works_count:,})")
+    print("=" * 60)
 
 
 def cmd_stats_works():
@@ -1607,11 +1655,19 @@ def main():
     p_exp_authors.add_argument("--limit", type=int, default=20, help="Number of preview records on screen")
     
     # sync-works subcommand
-    p_sync_works = sub.add_parser("sync-works", help="Sync works/articles from OpenAlex for synced authors")
-    p_sync_works.add_argument("--limit", type=int, default=None, help="Limit number of works per author to sync")
+    p_sync_works = sub.add_parser("sync-works", help="Sync works/articles from OpenAlex for synced journals")
+    p_sync_works.add_argument("--limit", type=int, default=None, help="Limit number of works per journal to sync")
     p_sync_works.add_argument(
         "--journal-offset", type=int, default=0,
         help="Skip this many journals in stable journal_id order when resuming",
+    )
+    p_sync_works.add_argument(
+        "--target-total", type=int, default=None,
+        help="Stop when total articles in database reaches this number (e.g. 2000000)",
+    )
+    p_sync_works.add_argument(
+        "--no-prioritize-empty", action="store_true", default=False,
+        help="Do not prioritize journals with fewest/0 articles first",
     )
     
     # stats-works subcommand
@@ -1642,7 +1698,12 @@ def main():
         cmd_export_authors(args)
     elif args.command == "sync-works":
         acquire_lock("openalex_sync-sync-works")
-        sync_works(args.limit, args.journal_offset)
+        sync_works(
+            args.limit,
+            args.journal_offset,
+            target_total=args.target_total,
+            prioritize_empty=not args.no_prioritize_empty,
+        )
     elif args.command == "stats-works":
         cmd_stats_works()
     elif args.command == "export-works":
