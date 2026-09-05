@@ -75,5 +75,13 @@ def main():
         except Exception as e:
             print(f"[WARNING] Could not run seed script: {e}")
 
+    # Run migrations to guarantee all VN tables, columns, indexes exist
+    try:
+        from tools.vn_journals.migrate_vn_db import main as run_migration
+        print("\n[INFO] Running VN database migrations to ensure schema alignment...")
+        run_migration()
+    except Exception as e:
+        print(f"[WARNING] Migration step had warning/error: {e}")
+
 if __name__ == "__main__":
     main()

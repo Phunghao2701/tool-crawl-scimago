@@ -21,7 +21,10 @@ import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-from pipeline_lock import acquire as acquire_lock
+try:
+    from pipeline_lock import acquire as acquire_lock
+except ImportError:
+    from tools.pipeline_lock import acquire as acquire_lock
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)

@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import requests
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text

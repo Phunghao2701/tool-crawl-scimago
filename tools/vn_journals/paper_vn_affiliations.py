@@ -6,6 +6,11 @@ from typing import Any
 
 from sqlalchemy import text
 
+try:
+    from tools.vn_journals.import_one_journal_supabase import sync_identity_sequence
+except ImportError:
+    from import_one_journal_supabase import sync_identity_sequence  # type: ignore
+
 OPENALEX_PREFIXES = {
     "author": "A",
     "institution": "I",
@@ -216,15 +221,54 @@ def upsert_author_safe(
             cache[cache_key] = author_id
         return author_id
 
-    author_id = int(
-        conn.execute(
-            text(
-                'INSERT INTO "Author" ("orcid", "display_name", "openalex_id") '
-                'VALUES (:orcid, :display_name, :openalex_id) RETURNING "author_id"'
-            ),
+    sync_identity_sequence(conn, "Author", "author_id")
+    try:
+        if payload["openalex_id"]:
+            author_id = int(
+                conn.execute(
+                    text(
+                        'INSERT INTO "Author" ("orcid", "display_name", "openalex_id") '
+                        'VALUES (:orcid, :display_name, :openalex_id) '
+                        'ON CONFLICT ("openalex_id") DO UPDATE SET '
+                        '"orcid" = COALESCE(EXCLUDED."orcid", "Author"."orcid"), '
+                        '"display_name" = COALESCE(EXCLUDED."display_name", "Author"."display_name") '
+                        'RETURNING "author_id"'
+                    ),
+                    payload,
+                ).scalar_one()
+            )
+        elif payload["orcid"]:
+            author_id = int(
+                conn.execute(
+                    text(
+                        'INSERT INTO "Author" ("orcid", "display_name", "openalex_id") '
+                        'VALUES (:orcid, :display_name, :openalex_id) '
+                        'ON CONFLICT ("orcid") DO UPDATE SET '
+                        '"display_name" = COALESCE(EXCLUDED."display_name", "Author"."display_name") '
+                        'RETURNING "author_id"'
+                    ),
+                    payload,
+                ).scalar_one()
+            )
+        else:
+            author_id = int(
+                conn.execute(
+                    text(
+                        'INSERT INTO "Author" ("orcid", "display_name", "openalex_id") '
+                        'VALUES (:orcid, :display_name, :openalex_id) RETURNING "author_id"'
+                    ),
+                    payload,
+                ).scalar_one()
+            )
+    except Exception:
+        row = conn.execute(
+            text('SELECT "author_id" FROM "Author" WHERE lower(trim("display_name")) = lower(trim(:display_name)) LIMIT 1'),
             payload,
-        ).scalar_one()
-    )
+        ).fetchone()
+        if row:
+            author_id = int(row[0])
+        else:
+            raise
     if cache is not None and cache_key:
         cache[cache_key] = author_id
     return author_id
@@ -299,16 +343,42 @@ def upsert_institution(conn, inst: dict[str, Any]) -> int | None:
     if rows:
         return None
 
-    return int(
-        conn.execute(
-            text(
-                'INSERT INTO "Institution" ("openalex_id", "display_name", "country_code", "type") '
-                "VALUES (:openalex_id, :display_name, :country_code, :type) "
-                'RETURNING "institution_id"'
-            ),
+    sync_identity_sequence(conn, "Institution", "institution_id")
+    try:
+        if payload["openalex_id"]:
+            return int(
+                conn.execute(
+                    text(
+                        'INSERT INTO "Institution" ("openalex_id", "display_name", "country_code", "type") '
+                        'VALUES (:openalex_id, :display_name, :country_code, :type) '
+                        'ON CONFLICT ("openalex_id") DO UPDATE SET '
+                        '"display_name" = COALESCE(EXCLUDED."display_name", "Institution"."display_name"), '
+                        '"country_code" = COALESCE(EXCLUDED."country_code", "Institution"."country_code"), '
+                        '"type" = COALESCE(EXCLUDED."type", "Institution"."type"), '
+                        '"is_deleted" = false '
+                        'RETURNING "institution_id"'
+                    ),
+                    payload,
+                ).scalar_one()
+            )
+        return int(
+            conn.execute(
+                text(
+                    'INSERT INTO "Institution" ("openalex_id", "display_name", "country_code", "type") '
+                    'VALUES (:openalex_id, :display_name, :country_code, :type) '
+                    'RETURNING "institution_id"'
+                ),
+                payload,
+            ).scalar_one()
+        )
+    except Exception:
+        row = conn.execute(
+            text('SELECT "institution_id" FROM "Institution" WHERE lower(trim("display_name")) = lower(trim(:display_name)) LIMIT 1'),
             payload,
-        ).scalar_one()
-    )
+        ).fetchone()
+        if row:
+            return int(row[0])
+        raise
 
 
 def insert_institution_author_link(
