@@ -13,9 +13,9 @@ import psycopg2
 from psycopg2.extras import execute_values, Json
 
 if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
 
 OLD_URL = os.getenv("OLD_DATABASE_URL", "postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db")
 NEW_URL = os.getenv("NEW_DATABASE_URL", "postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse")
@@ -68,6 +68,7 @@ def make_engine(url):
         pool_pre_ping=True,
         connect_args={
             "connect_timeout": 30,
+            "options": "-c statement_timeout=300000 -c synchronous_commit=off",
             "keepalives": 1,
             "keepalives_idle": 30,
             "keepalives_interval": 10,
@@ -124,6 +125,11 @@ def prepare_target_database(tgt_engine):
         for tbl in reversed(TABLES_ORDER):
             conn.execute(text(f'TRUNCATE TABLE "{tbl}" CASCADE'))
             print(f"  Truncated {tbl}")
+            
+        print("\n[prepare] Dropping GIN indexes on Article to maximize bulk insert speed...")
+        conn.execute(text('DROP INDEX IF EXISTS idx_article_abstract_trgm'))
+        conn.execute(text('DROP INDEX IF EXISTS idx_article_title_trgm'))
+        print("  Dropped GIN trgm indexes (will be rebuilt after migration).")
     print("[prepare] Academic tables cleaned and ready for clean migration.")
 
 
@@ -146,10 +152,11 @@ def restore_project_relations(tgt_engine):
     print("[restore] Project relations successfully linked to migrated data.")
 
 
-def reset_sequences(target_engine):
-    print("\n[sequences] Resetting all table sequences in target DB...")
+def reset_sequences(target_engine, tables=None):
+    print("\n[sequences] Resetting table sequences in target DB...")
+    tables_to_check = tables if tables else TABLES_ORDER
     with target_engine.begin() as conn:
-        for tbl in TABLES_ORDER:
+        for tbl in tables_to_check:
             pks = get_pk_columns(conn, tbl)
             if len(pks) == 1:
                 pk = pks[0]
@@ -162,15 +169,63 @@ def reset_sequences(target_engine):
     print("[sequences] All sequences synchronized.")
 
 
+def get_fresh_tgt_conn(tgt_engine, max_retries=10):
+    for i in range(1, max_retries + 1):
+        try:
+            tgt_engine.dispose()
+            conn = tgt_engine.raw_connection()
+            conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = 300000;")
+                cur.execute("SET synchronous_commit = off;")
+            conn.commit()
+            return conn
+        except Exception as ex:
+            wait_time = min(30, 3 * i)
+            print(f"\n  [RETRY] Target connection attempt {i}/{max_retries} failed: {ex}. Retrying in {wait_time}s...")
+            if i == max_retries:
+                raise
+            time.sleep(wait_time)
+
+
+def execute_batch_with_retry(tgt_engine, conn_ref, insert_query, batch, max_retries=10):
+    for attempt in range(1, max_retries + 1):
+        try:
+            with conn_ref[0].cursor() as cur:
+                execute_values(cur, insert_query, batch, page_size=len(batch))
+            conn_ref[0].commit()
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as ex:
+            print(f"\n  [WARN] Batch insert error on attempt {attempt}/{max_retries}: {ex}")
+            try:
+                conn_ref[0].rollback()
+            except Exception:
+                pass
+            try:
+                conn_ref[0].close()
+            except Exception:
+                pass
+            if attempt == max_retries:
+                raise
+            wait_time = min(30, 3 * attempt)
+            print(f"  [RETRY] Reconnecting to Target DB in {wait_time}s...")
+            time.sleep(wait_time)
+            conn_ref[0] = get_fresh_tgt_conn(tgt_engine)
+
+
 def rebuild_indexes(target_engine):
     print("\n[indexes] Rebuilding text search GIN indexes on Article...")
-    with target_engine.begin() as conn:
+    with target_engine.connect() as conn:
+        conn.execute(text("SET statement_timeout = 0;"))
+        print("  Building idx_article_title_trgm...")
         conn.execute(text('CREATE INDEX IF NOT EXISTS idx_article_title_trgm ON "Article" USING gin (title gin_trgm_ops)'))
+        print("  Building idx_article_abstract_trgm...")
         conn.execute(text('CREATE INDEX IF NOT EXISTS idx_article_abstract_trgm ON "Article" USING gin (abstract gin_trgm_ops)'))
+        conn.commit()
     print("[indexes] GIN indexes rebuilt successfully.")
 
 
-def migrate_table(src_engine, tgt_engine, table_name):
+def migrate_table(src_engine, tgt_engine, table_name, resume=False):
     print(f"\n========================================================")
     print(f"[*] Processing Table: {table_name}")
     print(f"========================================================")
@@ -198,9 +253,25 @@ def migrate_table(src_engine, tgt_engine, table_name):
             print(f"  Source table is empty. Skipping.")
             return
 
+        if resume and tgt_start_rows == total_src_rows and total_src_rows > 0:
+            print(f"  [SKIP] Target already has identical row count ({tgt_start_rows:,}).")
+            return
+
     chunk_size = TABLE_CHUNK_SIZES.get(table_name, DEFAULT_CHUNK_SIZE)
     quoted_cols = ", ".join([f'"{c}"' for c in common_cols])
     json_cols = {c for c in common_cols if tgt_cols_info[c] in ("json", "jsonb")}
+
+    existing_pks = set()
+    pk_col = None
+    if resume and tgt_start_rows > 0:
+        with tgt_engine.connect() as tgt_conn:
+            pks = get_pk_columns(tgt_conn, table_name)
+            if len(pks) == 1 and pks[0] in common_cols and tgt_start_rows < 3000000:
+                pk_col = pks[0]
+                print(f"  [RESUME] Loading {tgt_start_rows:,} existing '{pk_col}' IDs from target to skip redundant transfer...")
+                t_pk = time.time()
+                existing_pks = set(r[0] for r in tgt_conn.execute(text(f'SELECT "{pk_col}" FROM "{table_name}"')))
+                print(f"  [RESUME] Loaded {len(existing_pks):,} existing IDs in {time.time()-t_pk:.2f}s. Skipping them in source stream.")
 
     insert_query = f"""
         INSERT INTO "{table_name}" ({quoted_cols})
@@ -211,11 +282,12 @@ def migrate_table(src_engine, tgt_engine, table_name):
     select_sql = f'SELECT {quoted_cols} FROM "{table_name}"'
 
     t_start = time.time()
-    migrated_rows = 0
+    migrated_rows = len(existing_pks)
+    new_rows_processed = 0
     batch_num = 0
+    pk_idx = common_cols.index(pk_col) if pk_col and existing_pks else None
 
-    tgt_raw_conn = tgt_engine.raw_connection()
-    tgt_raw_conn.autocommit = False
+    conn_ref = [get_fresh_tgt_conn(tgt_engine)]
 
     try:
         with src_engine.connect().execution_options(stream_results=True, yield_per=chunk_size) as src_conn:
@@ -223,6 +295,8 @@ def migrate_table(src_engine, tgt_engine, table_name):
             batch = []
 
             for row in res:
+                if pk_idx is not None and row[pk_idx] in existing_pks:
+                    continue
                 row_val = list(row)
                 if json_cols:
                     for i, col in enumerate(common_cols):
@@ -234,14 +308,13 @@ def migrate_table(src_engine, tgt_engine, table_name):
                 if len(batch) >= chunk_size:
                     batch_num += 1
                     t0 = time.time()
-                    with tgt_raw_conn.cursor() as cur:
-                        execute_values(cur, insert_query, batch, page_size=len(batch))
-                    tgt_raw_conn.commit()
+                    execute_batch_with_retry(tgt_engine, conn_ref, insert_query, batch, max_retries=10)
                     t_batch = time.time() - t0
                     migrated_rows += len(batch)
+                    new_rows_processed += len(batch)
                     pct = (migrated_rows / total_src_rows) * 100
                     elapsed = time.time() - t_start
-                    rps = migrated_rows / elapsed if elapsed > 0 else 0
+                    rps = new_rows_processed / elapsed if elapsed > 0 else 0
                     remaining = total_src_rows - migrated_rows
                     eta_sec = remaining / rps if rps > 0 else 0
                     print(f"  -> Batch {batch_num:3d}: {migrated_rows:,}/{total_src_rows:,} ({pct:5.1f}%) | {len(batch)} rows in {t_batch:.2f}s | Speed: {rps:,.0f} r/s | ETA: {eta_sec:.0f}s")
@@ -250,15 +323,17 @@ def migrate_table(src_engine, tgt_engine, table_name):
             if batch:
                 batch_num += 1
                 t0 = time.time()
-                with tgt_raw_conn.cursor() as cur:
-                    execute_values(cur, insert_query, batch, page_size=len(batch))
-                tgt_raw_conn.commit()
+                execute_batch_with_retry(tgt_engine, conn_ref, insert_query, batch, max_retries=10)
                 t_batch = time.time() - t0
                 migrated_rows += len(batch)
+                new_rows_processed += len(batch)
                 print(f"  -> Batch {batch_num:3d} (Final): {migrated_rows:,}/{total_src_rows:,} (100.0%) in {t_batch:.2f}s")
 
     finally:
-        tgt_raw_conn.close()
+        try:
+            conn_ref[0].close()
+        except Exception:
+            pass
 
     total_time = time.time() - t_start
     with tgt_engine.connect() as tgt_conn:
@@ -266,16 +341,17 @@ def migrate_table(src_engine, tgt_engine, table_name):
     print(f"[OK] Completed '{table_name}' in {total_time:.1f}s. Target rows: {tgt_final_rows:,}")
 
 
-def verify_all(src_engine, tgt_engine):
+def verify_all(src_engine, tgt_engine, tables=None):
     print("\n================================================================")
     print("                 FINAL AUDIT & VERIFICATION                     ")
     print("================================================================")
     print(f"{'Table Name':<35} {'Source Rows':>15} {'Target Rows':>15} {'Status':>10}")
     print("-" * 78)
     
+    tables_to_check = tables if tables else TABLES_ORDER
     all_matched = True
     with src_engine.connect() as sc, tgt_engine.connect() as tc:
-        for tbl in TABLES_ORDER:
+        for tbl in tables_to_check:
             s_cnt = get_row_count(sc, tbl)
             t_cnt = get_row_count(tc, tbl)
             status = "MATCH" if s_cnt == t_cnt else ("DIFF" if t_cnt > 0 else "EMPTY")
@@ -290,12 +366,15 @@ def verify_all(src_engine, tgt_engine):
         print("[NOTICE] Some differences noted (check above table).")
 
 
-def run_migration():
+def run_migration(resume=False, clean=False, target_tables=None):
     print("================================================================")
     print("      RESEARCHPULSE DATA MIGRATION (OLD DB -> NEW DB)           ")
     print("================================================================")
     print(f"SOURCE: {OLD_URL}")
     print(f"TARGET: {NEW_URL}")
+    print(f"MODE:   {'RESUME (Skip truncated tables)' if resume else 'CLEAN START'}")
+    if target_tables:
+        print(f"TABLES: {target_tables}")
     print("================================================================")
 
     src_engine = make_engine(OLD_URL)
@@ -309,24 +388,34 @@ def run_migration():
 
     t_global_start = time.time()
 
-    # Step 1: Prepare target DB (clean test dummy data, keep user & project)
-    prepare_target_database(tgt_engine)
+    # Step 1: Prepare target DB
+    if not resume and not target_tables:
+        prepare_target_database(tgt_engine)
+    else:
+        print("\n[prepare] Ensuring GIN indexes are dropped before insert...")
+        with tgt_engine.begin() as conn:
+            conn.execute(text('DROP INDEX IF EXISTS idx_article_abstract_trgm'))
+            conn.execute(text('DROP INDEX IF EXISTS idx_article_title_trgm'))
+        print("  Dropped GIN trgm indexes.")
 
-    # Step 2: Migrate all 18 tables
-    for table in TABLES_ORDER:
-        migrate_table(src_engine, tgt_engine, table)
+    # Step 2: Migrate tables
+    tables_to_run = target_tables if target_tables else TABLES_ORDER
+    for table in tables_to_run:
+        migrate_table(src_engine, tgt_engine, table, resume=resume)
 
     # Step 3: Restore project relations
-    restore_project_relations(tgt_engine)
+    if not target_tables or "Project" in target_tables or "Subject_Area" in target_tables:
+        restore_project_relations(tgt_engine)
 
     # Step 4: Reset sequences
-    reset_sequences(tgt_engine)
+    reset_sequences(tgt_engine, tables=tables_to_run)
 
     # Step 5: Rebuild text search GIN indexes
-    rebuild_indexes(tgt_engine)
+    if not target_tables or "Article" in target_tables:
+        rebuild_indexes(tgt_engine)
 
     # Step 6: Verify
-    verify_all(src_engine, tgt_engine)
+    verify_all(src_engine, tgt_engine, tables=TABLES_ORDER)
 
     total_elapsed = time.time() - t_global_start
     print("\n================================================================")
@@ -335,4 +424,12 @@ def run_migration():
 
 
 if __name__ == "__main__":
-    run_migration()
+    import argparse
+    parser = argparse.ArgumentParser(description="Migrate complete academic data from Old DB to New DB")
+    parser.add_argument("--resume", action="store_true", help="Resume migration without truncating target tables")
+    parser.add_argument("--clean", action="store_true", help="Force clean migration (truncate target tables first)")
+    parser.add_argument("--table", nargs="+", help="Specific table(s) to migrate")
+    args = parser.parse_args()
+
+    run_migration(resume=args.resume, clean=args.clean, target_tables=args.table)
+

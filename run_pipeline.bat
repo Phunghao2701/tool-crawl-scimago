@@ -171,12 +171,12 @@ if "%w_choice%"=="1" (
 ) else if "%w_choice%"=="2" (
     echo.
     echo [INFO] Bat dau dong bo huong den moc 2,000,000 bai bao (Uu tien tap chi chua co bai)...
-    python tools/openalex_sync.py sync-works --limit 70 --target-total 2000000
+    python tools/openalex_sync.py sync-works --limit 100 --target-total 2000000
 ) else (
     echo.
     set w_limit=
-    set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 70): "
-    if "!w_limit!"=="" set w_limit=70
+    set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 100): "
+    if "!w_limit!"=="" set w_limit=100
     set w_target=
     set /p w_target="Nhap tong so bai bao can dung (nhan Enter de dung 2,000,000, nhap 0 de khong gioi han): "
     if "!w_target!"=="" set w_target=2000000

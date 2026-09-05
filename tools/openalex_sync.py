@@ -18,9 +18,11 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from datetime import datetime, timezone
+import re
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
+from psycopg2.extras import execute_values
 
 from pipeline_lock import acquire as acquire_lock
 # Lấy đường dẫn tuyệt đối tới file .env nằm ở thư mục gốc của project
@@ -144,27 +146,40 @@ def safe_get(url, headers=None, timeout=15):
     return FakeResponse429()
 
 
+_subject_area_cache = {}
+_subject_category_cache = {}
+
 def get_or_create_subject_info(conn, field_name, subfield_name):
+    global _subject_area_cache, _subject_category_cache
     subject_area_id = None
     subject_category_id = None
     
     if field_name:
-        subject_area_id = conn.execute(text("""
-            INSERT INTO "Subject_Area" (display_name)
-            VALUES (:name)
-            ON CONFLICT (display_name) DO UPDATE
-                SET display_name = EXCLUDED.display_name
-            RETURNING subject_area_id
-        """), {"name": field_name}).scalar()
+        if field_name in _subject_area_cache:
+            subject_area_id = _subject_area_cache[field_name]
+        else:
+            subject_area_id = conn.execute(text("""
+                INSERT INTO "Subject_Area" (display_name)
+                VALUES (:name)
+                ON CONFLICT (display_name) DO UPDATE
+                    SET display_name = EXCLUDED.display_name
+                RETURNING subject_area_id
+            """), {"name": field_name}).scalar()
+            _subject_area_cache[field_name] = subject_area_id
             
     if subfield_name:
-        subject_category_id = conn.execute(text("""
-            INSERT INTO "Subject_Category" (subject_area_id, display_name)
-            VALUES (:area_id, :name)
-            ON CONFLICT (subject_area_id, display_name) DO UPDATE
-                SET display_name = EXCLUDED.display_name
-            RETURNING subject_category_id
-        """), {"area_id": subject_area_id, "name": subfield_name}).scalar()
+        cat_key = (subject_area_id, subfield_name)
+        if cat_key in _subject_category_cache:
+            subject_category_id = _subject_category_cache[cat_key]
+        else:
+            subject_category_id = conn.execute(text("""
+                INSERT INTO "Subject_Category" (subject_area_id, display_name)
+                VALUES (:area_id, :name)
+                ON CONFLICT (subject_area_id, display_name) DO UPDATE
+                    SET display_name = EXCLUDED.display_name
+                RETURNING subject_category_id
+            """), {"area_id": subject_area_id, "name": subfield_name}).scalar()
+            _subject_category_cache[cat_key] = subject_category_id
             
     return subject_area_id, subject_category_id
 
@@ -1304,11 +1319,334 @@ def _db_process_single_work(
         })
 
 
-def sync_works(limit: int, journal_offset: int = 0, target_total: int = None, prioritize_empty: bool = True):
-    # pool_size du cho toi da 10 thread cung mo transaction (xem ThreadPoolExecutor ben duoi)
+def _db_bulk_insert_chunk(raw_conn, chunk_works, topic_cache, kw_cache, author_id_cache, author_orcid_cache, vol_cache, iss_cache):
+    """
+    Bulk insert an entire chunk (e.g. 10 journals / ~1,000 works) in a single fast transaction.
+    Uses execute_values for Authors, Articles, Author_Article, Keyword_Article, Sub_Topic.
+    """
+    t0 = time.time()
+    cur = raw_conn.cursor()
+
+    # 1. Bulk insert any missing keywords
+    missing_kws = set()
+    for _, _, works in chunk_works:
+        for w in works:
+            for kw in w.get("keywords", []):
+                kn = kw.get("display_name")
+                if kn and kn not in kw_cache:
+                    missing_kws.add(kn[:255])
+    if missing_kws:
+        kw_tuples = [(kn,) for kn in missing_kws]
+        res = execute_values(cur, """
+            INSERT INTO "Keyword" (display_name)
+            VALUES %s
+            ON CONFLICT (display_name) DO UPDATE SET display_name = EXCLUDED.display_name
+            RETURNING display_name, keyword_id
+        """, kw_tuples, fetch=True)
+        for kn, kid in res:
+            kw_cache[kn] = kid
+
+    # 2. Volumes, Issues, and Article Tuples
+    articles_dict = {}    # openalex_id -> article tuple
+    work_refs = []        # list of work dicts
+    new_authors_dict = {} # openalex_id -> (display_name, clean_orcid, openalex_id)
+    batch_orcids = set(author_orcid_cache.keys())
+
+    for j_id, j_name, works in chunk_works:
+        for w in works:
+            w_id = w.get("id")
+            if not w_id:
+                continue
+            title = w.get("title")
+            if not title:
+                continue
+            title = title[:1000]
+            doi = w.get("doi")
+            abstract = w.get("abstract")
+            pub_year = w.get("publication_year")
+            biblio = w.get("biblio") or {}
+            vol_raw = biblio.get("volume")
+            iss_raw = biblio.get("issue")
+
+            # Extract volume number
+            volume_number = None
+            if vol_raw is not None:
+                match = re.search(r'\d+', str(vol_raw))
+                if match:
+                    try:
+                        volume_number = int(match.group())
+                    except ValueError:
+                        pass
+
+            vol_id = None
+            if volume_number is not None:
+                vol_key = (j_id, volume_number, pub_year)
+                if vol_key in vol_cache:
+                    vol_id = vol_cache[vol_key]
+                else:
+                    cur.execute("""
+                        SELECT volume_id FROM "Volume"
+                        WHERE journal_id = %s AND volume_number = %s AND publication_year = %s AND is_deleted = false
+                    """, (j_id, volume_number, pub_year))
+                    res = cur.fetchone()
+                    if res:
+                        vol_id = res[0]
+                    else:
+                        cur.execute("""
+                            INSERT INTO "Volume" (journal_id, volume_number, publication_year)
+                            VALUES (%s, %s, %s)
+                            RETURNING volume_id
+                        """, (j_id, volume_number, pub_year))
+                        vol_id = cur.fetchone()[0]
+                    vol_cache[vol_key] = vol_id
+
+            iss_id = None
+            if vol_id is not None and iss_raw is not None:
+                iss_str = str(iss_raw)[:50]
+                iss_key = (vol_id, iss_str, pub_year)
+                if iss_key in iss_cache:
+                    iss_id = iss_cache[iss_key]
+                else:
+                    cur.execute("""
+                        SELECT issue_id FROM "Issue"
+                        WHERE volume_id = %s AND issue_number = %s AND publication_year = %s
+                    """, (vol_id, iss_str, pub_year))
+                    res = cur.fetchone()
+                    if res:
+                        iss_id = res[0]
+                    else:
+                        cur.execute("""
+                            INSERT INTO "Issue" (volume_id, issue_number, publication_year)
+                            VALUES (%s, %s, %s)
+                            RETURNING issue_id
+                        """, (vol_id, iss_str, pub_year))
+                        iss_id = cur.fetchone()[0]
+                    iss_cache[iss_key] = iss_id
+
+            # Primary topic
+            p_top = w.get("primary_topic") or {}
+            t_name = p_top.get("display_name")
+            p_top_id = topic_cache.get(t_name) if t_name else None
+
+            cit_cnt = w.get("cited_by_count", 0)
+            ref_works = w.get("referenced_works", []) or []
+            refs_json = json.dumps(ref_works, ensure_ascii=False)
+            ref_cnt = len(ref_works)
+
+            if w_id not in articles_dict:
+                articles_dict[w_id] = (
+                    title, doi, abstract, iss_id, pub_year, p_top_id,
+                    cit_cnt, refs_json, ref_cnt, w_id
+                )
+                work_refs.append(w)
+
+            # Authors
+            for auth_item in w.get("authorships", []):
+                a_data = auth_item.get("author") or {}
+                a_id = a_data.get("id")
+                a_name = a_data.get("display_name")
+                a_orcid = a_data.get("orcid")
+                if not a_name or not a_id:
+                    continue
+
+                if a_id in author_id_cache:
+                    continue
+                if a_orcid and a_orcid in author_orcid_cache:
+                    author_id_cache[a_id] = author_orcid_cache[a_orcid]
+                    continue
+
+                if a_id not in new_authors_dict:
+                    clean_orcid = a_orcid
+                    if clean_orcid:
+                        if clean_orcid in batch_orcids:
+                            clean_orcid = None
+                        else:
+                            batch_orcids.add(clean_orcid)
+                    new_authors_dict[a_id] = (a_name[:255], clean_orcid, a_id)
+
+    # 3. Bulk insert Authors
+    if new_authors_dict:
+        auth_tuples = list(new_authors_dict.values())
+        try:
+            cur_res = execute_values(cur, """
+                INSERT INTO "Author" (display_name, orcid, openalex_id)
+                VALUES %s
+                ON CONFLICT (openalex_id) DO UPDATE SET display_name = EXCLUDED.display_name
+                RETURNING author_id, openalex_id, orcid
+            """, auth_tuples, fetch=True)
+            for r in cur_res:
+                author_id_cache[r[1]] = r[0]
+                if r[2]:
+                    author_orcid_cache[r[2]] = r[0]
+        except Exception:
+            raw_conn.rollback()
+            # Retry individually to safely handle any unique conflict
+            for a_name, a_orcid, a_id in auth_tuples:
+                try:
+                    cur.execute("""
+                        INSERT INTO "Author" (display_name, orcid, openalex_id)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (openalex_id) DO UPDATE SET display_name = EXCLUDED.display_name
+                        RETURNING author_id, openalex_id, orcid
+                    """, (a_name, a_orcid, a_id))
+                    r = cur.fetchone()
+                    if r:
+                        author_id_cache[r[1]] = r[0]
+                        if r[2]:
+                            author_orcid_cache[r[2]] = r[0]
+                except Exception:
+                    try:
+                        cur.execute("""
+                            INSERT INTO "Author" (display_name, orcid, openalex_id)
+                            VALUES (%s, NULL, %s)
+                            ON CONFLICT (openalex_id) DO UPDATE SET display_name = EXCLUDED.display_name
+                            RETURNING author_id, openalex_id
+                        """, (a_name, a_id))
+                        r = cur.fetchone()
+                        if r:
+                            author_id_cache[r[1]] = r[0]
+                    except Exception:
+                        pass
+
+    # 4. Bulk insert Articles
+    art_map = {}
+    articles_data = list(articles_dict.values())
+    if articles_data:
+        res_arts = execute_values(cur, """
+            INSERT INTO "Article" (
+                title, doi, abstract, issue_id, publication_year, primary_topic,
+                citation_count, "references", reference_count, openalex_id
+            )
+            VALUES %s
+            ON CONFLICT (openalex_id) DO UPDATE 
+            SET doi = EXCLUDED.doi,
+                abstract = EXCLUDED.abstract,
+                publication_year = EXCLUDED.publication_year,
+                primary_topic = EXCLUDED.primary_topic,
+                citation_count = EXCLUDED.citation_count,
+                "references" = EXCLUDED."references",
+                reference_count = EXCLUDED.reference_count,
+                is_deleted = false
+            RETURNING article_id, openalex_id
+        """, articles_data, fetch=True)
+        for r in res_arts:
+            art_map[r[1]] = r[0]
+
+    # 5. Bulk insert join tables
+    author_article_set = set()
+    keyword_article_set = set()
+    sub_topic_set = set()
+
+    for w in work_refs:
+        w_id = w.get("id")
+        art_id = art_map.get(w_id)
+        if not art_id:
+            continue
+
+        for auth_item in w.get("authorships", []):
+            a_data = auth_item.get("author") or {}
+            a_id = a_data.get("id")
+            if a_id and a_id in author_id_cache:
+                author_article_set.add((author_id_cache[a_id], art_id))
+
+        for kw in w.get("keywords", []):
+            k_name = kw.get("display_name")
+            k_score = kw.get("score", 0.0)
+            if k_name and k_name in kw_cache:
+                keyword_article_set.add((kw_cache[k_name], art_id, k_score))
+
+        for top in w.get("topics", []):
+            top_name = top.get("display_name")
+            if top_name and top_name in topic_cache:
+                sub_topic_set.add((art_id, topic_cache[top_name]))
+
+    if author_article_set:
+        execute_values(cur, """
+            INSERT INTO "Author_Article" (author_id, article_id)
+            VALUES %s ON CONFLICT DO NOTHING
+        """, list(author_article_set))
+
+    if keyword_article_set:
+        execute_values(cur, """
+            INSERT INTO "Keyword_Article" (keyword_id, article_id, score)
+            VALUES %s ON CONFLICT DO NOTHING
+        """, list(keyword_article_set))
+
+    if sub_topic_set:
+        execute_values(cur, """
+            INSERT INTO "Sub_Topic" (article_id, topic_id)
+            VALUES %s ON CONFLICT DO NOTHING
+        """, list(sub_topic_set))
+
+    raw_conn.commit()
+    elapsed = time.time() - t0
+    return len(art_map), elapsed
+
+
+def _fetch_journal_works(idx, journal, limit):
+    journal_uuid, openalex_id, journal_name = journal[0], journal[1], journal[2]
+    clean_id = openalex_id.split("/")[-1]
+
+    page_size = min(limit or 100, 100)
+    cursor_mode = (limit is None or limit == 0)
+
+    if cursor_mode:
+        url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page=100&cursor=*"
+    else:
+        url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page={page_size}"
+
+    works_collected = []
+    current_url = url
+    page_idx = 1
+    has_429 = False
+    success = True
+
+    while True:
+        time.sleep(0.05)
+        response = safe_get(current_url, timeout=15)
+        if response.status_code != 200:
+            success = False
+            if response.status_code == 429:
+                has_429 = True
+            break
+
+        data = response.json()
+        results = data.get("results", [])
+        meta = data.get("meta", {})
+
+        if not results:
+            break
+
+        works_collected.extend(results)
+
+        if not cursor_mode:
+            break
+
+        next_cursor = meta.get("next_cursor")
+        if not next_cursor or len(works_collected) >= 500:
+            break
+
+        import urllib.parse as urllib_parse
+        parsed = urllib_parse.urlparse(current_url)
+        query_params = urllib_parse.parse_qs(parsed.query)
+        query_params['cursor'] = [next_cursor]
+        new_query = urllib_parse.urlencode(query_params, doseq=True)
+        current_url = parsed._replace(query=new_query).geturl()
+        page_idx += 1
+
+    return idx, journal_uuid, journal_name, works_collected, success, has_429
+
+
+def sync_works(
+    limit: int,
+    journal_offset: int = 0,
+    target_total: int = None,
+    prioritize_empty: bool = True,
+    batch_journals: int = 10,
+):
     engine = create_engine(
-        DATABASE_URL, pool_size=12, max_overflow=6,
-        connect_args={"options": "-c statement_timeout=120000"},  # 2 phut, tranh treo vinh vien
+        DATABASE_URL, pool_size=5,
+        connect_args={"options": "-c statement_timeout=120000 -c synchronous_commit=off"},
     )
 
     with engine.connect() as conn:
@@ -1321,7 +1659,35 @@ def sync_works(limit: int, journal_offset: int = 0, target_total: int = None, pr
             print(f"[INFO] Target of {target_total:,} articles is already reached or exceeded! Nothing to do.")
             return
 
-    # 1. Lấy danh sách các Journal đã match OpenAlex để đồng bộ bài viết.
+    # 1. Pre-load Global Caches vao RAM de triet tieu SQL SELECT thua
+    print("[cache] Pre-loading global topic, keyword, author & orcid caches...")
+    t_c0 = time.time()
+    with engine.connect() as conn:
+        global_topic_cache = {
+            r[0]: r[1]
+            for r in conn.execute(text('SELECT display_name, topic_id FROM "Topic"')).fetchall()
+        }
+        global_keyword_cache = {
+            r[0]: r[1]
+            for r in conn.execute(text('SELECT display_name, keyword_id FROM "Keyword"')).fetchall()
+        }
+        global_author_id_cache = {
+            r[0]: r[1]
+            for r in conn.execute(text('SELECT openalex_id, author_id FROM "Author" WHERE openalex_id IS NOT NULL')).fetchall()
+        }
+        global_author_orcid_cache = {
+            r[0]: r[1]
+            for r in conn.execute(text('SELECT orcid, author_id FROM "Author" WHERE orcid IS NOT NULL')).fetchall()
+        }
+    print(
+        f"[cache] Pre-loaded {len(global_topic_cache):,} topics, {len(global_keyword_cache):,} keywords, "
+        f"{len(global_author_id_cache):,} authors, {len(global_author_orcid_cache):,} orcids in {time.time() - t_c0:.2f}s."
+    )
+
+    global_vol_cache = {}
+    global_iss_cache = {}
+
+    # 2. Lay danh sach cac Journal da match OpenAlex
     if prioritize_empty:
         print("[sync-works] Ordering journals to prioritize journals with 0 or fewest articles first...")
         query_journals = """
@@ -1361,186 +1727,72 @@ def sync_works(limit: int, journal_offset: int = 0, target_total: int = None, pr
             f"{len(journals):,} journals remain."
         )
 
-    print(f"\n[sync-works] Starting synchronization of works/articles for {len(journals)} journals...")
+    print(f"\n[sync-works] Starting chunked bulk sync for {len(journals)} journals (Batch: {batch_journals} journals/chunk)...")
 
-    cache_lock = threading.Lock()
-    count_lock = threading.Lock()
-    target_reached_event = threading.Event()
-
-    total = total_journals
     synced_works_count = 0
-    estimated_total_articles = current_article_count
     consecutive_429 = 0
-    any_failed = False
-    # Subject/topic rows share unique indexes across journals. Keep database
-    # writes deterministic by default; increase only after verifying the DB.
-    max_workers = max(1, int(os.getenv("OPENALEX_WORKERS", "1")))
-    print(f"[sync-works] Database workers: {max_workers}")
+    total_batches = (len(journals) + batch_journals - 1) // batch_journals
+    chunk_idx = 0
 
-    def _process_one_journal(idx, journal):
-        if target_reached_event.is_set():
-            return 0, True, False
+    raw_conn = engine.raw_connection()
+    try:
+        for b_start in range(0, len(journals), batch_journals):
+            chunk_idx += 1
+            b_end = min(b_start + batch_journals, len(journals))
+            batch_j = journals[b_start:b_end]
 
-        journal_uuid, openalex_id, journal_name = journal[0], journal[1], journal[2]
-        art_existing = journal[3] if len(journal) > 3 else 0
-
-        # Cache cục bộ cho tạp chí hiện tại (khong chia se giua cac thread)
-        topic_cache = {}      # key: display_name -> topic_id
-        keyword_cache = {}    # key: display_name -> keyword_id
-        author_id_cache = {}  # key: openalex_id -> author_id
-        author_orcid_cache = {}  # key: orcid -> author_id
-        author_name_cache = {}  # key: display_name -> author_id
-        volume_cache = {}  # key: (volume_number, publication_year) -> volume_id
-        issue_cache = {}   # key: (volume_id, issue_number, publication_year) -> issue_id
-
-        print(f"[{idx}/{total}] Fetching works for Journal: {journal_name} ({openalex_id}) [Existing: {art_existing}]")
-
-        clean_id = openalex_id.split("/")[-1]
-
-        if limit:
-            page_size = min(limit, 100)
-            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page={page_size}"
-            cursor_mode = False
-        else:
-            url = f"https://api.openalex.org/works?filter=primary_location.source.id:{clean_id}&per_page=100&cursor=*"
-            cursor_mode = True
-
-        local_synced = 0
-        try:
-            current_url = url
-            page_idx = 1
-            sync_success = True
-            has_429 = False
-
-            while True:
-                if target_reached_event.is_set():
-                    break
-
-                import urllib.parse as urllib_parse
-                # Lich su tranh spam API - OpenAlex polite pool (mailto+api_key) cho phep ~10 req/s.
-                # Chay o nhieu thread nen tong request/s se cao hon 1/0.1s, nhung van trong
-                # nguong an toan vi thoi gian cho chinh la network/DB, khong phai sleep nay.
-                time.sleep(0.1)
-                if cursor_mode:
-                    print(f"  -> [{idx}] Fetching page {page_idx} via cursor...")
-                else:
-                    print(f"  -> [{idx}] Fetching works page...")
-
-                response = safe_get(current_url, timeout=15)
-                if response.status_code != 200:
-                    detail = ""
+            # 1. Fetch works for this batch of journals concurrently (max 3 workers)
+            chunk_works = []
+            has_429_count = 0
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [
+                    executor.submit(_fetch_journal_works, journal_offset + b_start + i + 1, j, limit)
+                    for i, j in enumerate(batch_j)
+                ]
+                for fut in as_completed(futures):
                     try:
-                        error_data = response.json()
-                        detail = error_data.get("message") or error_data.get("error") or ""
-                    except Exception:
-                        detail = getattr(response, "text", "")[:300]
-                    suffix = f" ({detail})" if detail else ""
-                    print(f"  -> [{idx}] FAILED to fetch works: HTTP {response.status_code}{suffix}")
-                    sync_success = False
-                    if response.status_code == 429:
-                        has_429 = True
-                    break
+                        idx, j_uuid, j_name, w_list, succ, h429 = fut.result()
+                        if h429:
+                            has_429_count += 1
+                        if w_list:
+                            chunk_works.append((j_uuid, j_name, w_list))
+                    except Exception as e:
+                        print(f"  [Fetch Exception] {e}")
 
-                data = response.json()
-                works = data.get("results", [])
-                meta = data.get("meta", {})
-
-                if not works:
-                    if cursor_mode and page_idx > 1:
-                        print(f"  -> [{idx}] No more works found.")
-                    else:
-                        print(f"  -> [{idx}] No works found for this journal.")
-                    break
-
-                print(f"  -> [{idx}] Processing {len(works)} works on page {page_idx}...")
-
-                page_started = time.monotonic()
-                # Different journals have independent article/volume/issue data,
-                # so let their page transactions run concurrently. Shared entities
-                # are protected by cache_lock inside _db_process_single_work.
-                for work_number, work in enumerate(works, start=1):
-                    # Commit each work independently so a shared topic/author lock
-                    # cannot be held for the lifetime of an entire page.
-                    with engine.begin() as conn:
-                        _db_process_single_work(
-                            conn, work, journal_uuid,
-                            topic_cache, author_id_cache, author_orcid_cache, author_name_cache,
-                            keyword_cache, volume_cache, issue_cache, cache_lock
-                        )
-                    local_synced += 1
-                    if work_number % 10 == 0 or work_number == len(works):
-                        print(
-                            f"  -> [{idx}] Processed {work_number}/{len(works)} works "
-                            f"({time.monotonic() - page_started:.1f}s)",
-                            flush=True,
-                        )
-
-                # Target check
-                if target_total:
-                    nonlocal estimated_total_articles
-                    with count_lock:
-                        estimated_total_articles += len(works)
-                        if estimated_total_articles >= target_total:
-                            print(f"\n[TARGET REACHED] Approaching target {target_total:,} articles! Stopping gracefully.")
-                            target_reached_event.set()
-                            break
-
-                if not cursor_mode:
-                    break
-
-                next_cursor = meta.get("next_cursor")
-                if not next_cursor:
-                    break
-
-                parsed = urllib_parse.urlparse(current_url)
-                query_params = urllib_parse.parse_qs(parsed.query)
-                query_params['cursor'] = [next_cursor]
-                new_query = urllib_parse.urlencode(query_params, doseq=True)
-                current_url = parsed._replace(query=new_query).geturl()
-                page_idx += 1
-
-            if target_reached_event.is_set():
-                print(f"  -> [{idx}] STOPPED: Target total reached.")
-            elif sync_success:
-                print(f"  -> [{idx}] SUCCESS: Synced all works for Journal: {journal_name}.")
-            elif has_429:
-                print(f"  -> [{idx}] SKIPPED: Temporary API rate limit (429). Retaining for next run.")
-            else:
-                print(f"  -> [{idx}] FAILED: Could not fetch all works for Journal: {journal_name}.")
-
-            return local_synced, sync_success, has_429
-        except Exception as e:
-            print(f"  -> [{idx}] Request Exception for journal {journal_name}: {e}")
-            return local_synced, False, False
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_process_one_journal, idx, journal): idx
-            for idx, journal in enumerate(journals, journal_offset + 1)
-        }
-
-        for future in as_completed(futures):
-            if target_reached_event.is_set():
-                print("\n[sync-works] Target reached. Shutting down remaining workers...")
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
-
-            local_synced, sync_success, has_429 = future.result()
-            synced_works_count += local_synced
-            if not sync_success:
-                any_failed = True
-
-            if sync_success:
-                consecutive_429 = 0
-            elif has_429:
+            if has_429_count >= 3:
                 consecutive_429 += 1
                 if consecutive_429 >= 3:
-                    print("\n[CRITICAL] OpenAlex API has blocked your IP (HTTP 429) consecutively. Stopping process to prevent abuse.")
-                    print("Please edit your .env file to set a valid OPENALEX_EMAIL, or wait a few minutes before running again.")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    sys.exit(1)
+                    print("\n[CRITICAL] Consecutive HTTP 429 detected. Backing off 60s...")
+                    time.sleep(60)
             else:
                 consecutive_429 = 0
+
+            # 2. Bulk insert chunk into DB in a single fast transaction
+            if chunk_works:
+                n_inserted, db_time = _db_bulk_insert_chunk(
+                    raw_conn, chunk_works,
+                    global_topic_cache, global_keyword_cache,
+                    global_author_id_cache, global_author_orcid_cache,
+                    global_vol_cache, global_iss_cache
+                )
+                synced_works_count += n_inserted
+                current_article_count += n_inserted
+
+                pct_str = f"({(current_article_count / target_total) * 100:.1f}%)" if target_total else ""
+                print(
+                    f"[Chunk {chunk_idx}/{total_batches}] Saved {n_inserted} articles "
+                    f"from {len(chunk_works)} journals in {db_time:.2f}s DB ({n_inserted / max(0.01, db_time):.0f} art/s) "
+                    f"| Total DB Articles: {current_article_count:,} {pct_str}",
+                    flush=True
+                )
+
+            # Check target
+            if target_total and current_article_count >= target_total:
+                print(f"\n[TARGET REACHED] Reached target {target_total:,} articles! Stopping gracefully.")
+                break
+
+    finally:
+        raw_conn.close()
 
     with engine.connect() as conn:
         final_article_count = conn.execute(text('SELECT count(*) FROM "Article" WHERE is_deleted = false')).scalar()
@@ -1548,6 +1800,7 @@ def sync_works(limit: int, journal_offset: int = 0, target_total: int = None, pr
     print("\n" + "=" * 60)
     print(f"[sync-works] Finished! Total articles in DB: {final_article_count:,} (Session synced: {synced_works_count:,})")
     print("=" * 60)
+
 
 
 def cmd_stats_works():
@@ -1669,6 +1922,10 @@ def main():
         "--no-prioritize-empty", action="store_true", default=False,
         help="Do not prioritize journals with fewest/0 articles first",
     )
+    p_sync_works.add_argument(
+        "--batch-journals", type=int, default=10,
+        help="Number of journals to buffer and insert as a chunk (default: 10)",
+    )
     
     # stats-works subcommand
     sub.add_parser("stats-works", help="Show statistics of synced academic entities (Articles, Topics, Keywords)")
@@ -1703,6 +1960,7 @@ def main():
             args.journal_offset,
             target_total=args.target_total,
             prioritize_empty=not args.no_prioritize_empty,
+            batch_journals=getattr(args, "batch_journals", 10),
         )
     elif args.command == "stats-works":
         cmd_stats_works()
