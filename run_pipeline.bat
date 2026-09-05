@@ -1,22 +1,37 @@
 @echo off
+setlocal EnableExtensions
 rem Change directory to the folder where this batch file is located
 cd /d "%~dp0"
 
+rem Safety check: Ensure Python is available
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo ====================================================================
+    echo [LOI] Khong tim thay lenh 'python' trong PATH he thong!
+    echo Vui long cai dat Python hoac them Python vao bien moi truong PATH.
+    echo ====================================================================
+    pause
+    exit /b 1
+)
+
 rem Auto-create .env file if it does not exist
 if not exist .env (
-    echo DATABASE_URL=postgresql+psycopg2://postgres:postgres123@localhost:5432/researchpulse > .env
-    echo OPENALEX_EMAIL=academic-etl@example.com >> .env
+    echo DATABASE_URL=postgresql://postgres:postgres123@100.121.61.95:5432/researchpulse > .env
+    echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db >> .env
+    echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse >> .env
+    echo OPENALEX_EMAIL=phunghao2701@gmail.com >> .env
+    echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X >> .env
+    echo OPENALEX_RPS=8 >> .env
     echo SEMANTIC_SCHOLAR_BASE_URL=https://api.semanticscholar.org/graph/v1 >> .env
     echo SEMANTIC_SCHOLAR_RPS=1 >> .env
     echo [INFO] Da tu dong tao file .env mac dinh vi khong tim thay!
 )
 
-chcp 65001 > nul
+chcp 65001 >nul 2>&1
 title Scimago and OpenAlex ETL Pipeline Control Panel
 color 0B
 
-rem Non-interactive smoke test for the Neo4j menu option. This only prints
-rem the command and never connects to PostgreSQL or Neo4j.
+rem Non-interactive smoke test flags (for automated tests)
 set "PIPELINE_DRY_RUN="
 set "PIPELINE_DRY_RUN_EXIT="
 if /I "%~1"=="--dry-run-neo4j" (
@@ -46,8 +61,11 @@ if /I "%~1"=="--dry-run-meilisearch" (
 :menu
 cls
 
-rem Hien thi DB dang active
-for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB=%%A
+rem Hien thi DB dang active (uu tien dong DATABASE_URL chinh xac)
+set "CURRENT_DB="
+for /f "tokens=1,* delims==" %%A in ('findstr /r /i "^DATABASE_URL=" .env 2^>nul') do set "CURRENT_DB=%%B"
+if not defined CURRENT_DB for /f "tokens=1,* delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set "CURRENT_DB=%%B"
+
 echo ====================================================================
 echo             SCIMAGO AND OPENALEX ETL PIPELINE CONTROL PANEL
 echo ====================================================================
@@ -65,29 +83,59 @@ echo  6. Export Report: Xuat bao cao Excel va CSV
 echo  7. View Database Statistics: Xem so lieu thong ke trong database
 echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
 echo  M. Migrate Data: Chuyen data tu Local Docker sang ResearchPulse (100.121.61.95)
-echo  N. Sync PostgreSQL -^> Neo4j: Dong bo knowledge graph
-echo  V. Embed Article Vectors: Tao vector embedding trong PostgreSQL
-echo  L. Sync PostgreSQL -^> Meilisearch: Dong bo search indexes
 echo  9. Exit: Thoat
 echo ====================================================================
-choice /c 1234567890ERMNVL /n /m "Vui long chon chuc nang (1-9, 0, E, R, M, N, V, L): "
-echo [DEBUG] Lua chon nhan duoc: errorlevel=%errorlevel%
-if errorlevel 16 goto sync_meilisearch
-if errorlevel 15 goto embed_db
-if errorlevel 14 goto sync_neo4j
-if errorlevel 13 goto migrate_db
-if errorlevel 12 goto backfill_references
-if errorlevel 11 goto sync_semantic
-if errorlevel 10 goto switch_db
-if errorlevel 9 goto exit
-if errorlevel 8 goto full
-if errorlevel 7 goto stats
-if errorlevel 6 goto export
-if errorlevel 5 goto sync_authors_cmd
-if errorlevel 4 goto sync_works
-if errorlevel 3 goto sync_journals
-if errorlevel 2 goto import
-if errorlevel 1 goto setup
+set "choice="
+set /p choice="Vui long chon chuc nang (1-9, 0, E, R, M): "
+
+rem Trim whitespace from choice
+for /f "tokens=1" %%i in ("%choice%") do set "choice=%%i"
+
+if "%choice%"=="" goto check_empty
+set "empty_input_count=0"
+if /i "%choice%"=="0" goto switch_db
+if /i "%choice%"=="1" goto setup
+if /i "%choice%"=="2" goto import
+if /i "%choice%"=="3" goto sync_journals
+if /i "%choice%"=="4" goto sync_works
+if /i "%choice%"=="5" goto sync_authors_cmd
+if /i "%choice%"=="6" goto export
+if /i "%choice%"=="7" goto stats
+if /i "%choice%"=="8" goto full
+if /i "%choice%"=="9" goto exit
+if /i "%choice%"=="E" goto sync_semantic
+if /i "%choice%"=="R" goto backfill_references
+if /i "%choice%"=="M" goto migrate_db
+
+rem Cac option N, V, L tam thoi chua dung theo yeu cau cua user
+if /i "%choice%"=="N" (
+    echo.
+    echo [THONG BAO] Chuc nang Neo4j tam thoi chua dung den.
+    pause
+    goto menu
+)
+if /i "%choice%"=="V" (
+    echo.
+    echo [THONG BAO] Chuc nang Vector Embedding tam thoi chua dung den.
+    pause
+    goto menu
+)
+if /i "%choice%"=="L" (
+    echo.
+    echo [THONG BAO] Chuc nang Meilisearch tam thoi chua dung den.
+    pause
+    goto menu
+)
+
+goto menu
+
+:check_empty
+set /a empty_input_count+=1
+if %empty_input_count% geq 5 (
+    echo [THONG BAO] Khong nhan duoc lua chon, thoat.
+    goto exit
+)
+goto menu
 
 :setup
 cls
@@ -168,24 +216,29 @@ if "%w_choice%"=="1" (
     echo.
     echo [INFO] Bat dau dong bo 20 bai viet moi tap chi...
     python tools/openalex_sync.py sync-works --limit 20
-) else if "%w_choice%"=="2" (
-    echo.
-    echo [INFO] Bat dau dong bo huong den moc 2,000,000 bai bao (Uu tien tap chi chua co bai)...
-    python tools/openalex_sync.py sync-works --limit 100 --target-total 2000000
-) else (
-    echo.
-    set w_limit=
-    set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 100): "
-    if "!w_limit!"=="" set w_limit=100
-    set w_target=
-    set /p w_target="Nhap tong so bai bao can dung (nhan Enter de dung 2,000,000, nhap 0 de khong gioi han): "
-    if "!w_target!"=="" set w_target=2000000
-    if "!w_target!"=="0" (
-        python tools/openalex_sync.py sync-works --limit !w_limit!
-    ) else (
-        python tools/openalex_sync.py sync-works --limit !w_limit! --target-total !w_target!
-    )
+    goto sync_works_end
 )
+if "%w_choice%"=="2" (
+    echo.
+    echo [INFO] Bat dau dong bo huong den moc 2,000,000 bai bao - Uu tien tap chi chua co bai...
+    python tools/openalex_sync.py sync-works --limit 100 --target-total 2000000
+    goto sync_works_end
+)
+
+echo.
+set "w_limit="
+set /p w_limit="Nhap gioi han bai viet can sync moi tap chi (nhan Enter de sync 100): "
+if "%w_limit%"=="" set w_limit=100
+set "w_target="
+set /p w_target="Nhap tong so bai bao can dung (nhan Enter de dung 2,000,000, nhap 0 de khong gioi han): "
+if "%w_target%"=="" set w_target=2000000
+if "%w_target%"=="0" (
+    python tools/openalex_sync.py sync-works --limit %w_limit%
+) else (
+    python tools/openalex_sync.py sync-works --limit %w_limit% --target-total %w_target%
+)
+
+:sync_works_end
 echo.
 echo [OK] Dong bo bai bao hoan tat!
 echo.
@@ -339,39 +392,48 @@ echo ==========================================
 echo  0. SWITCH DATABASE
 echo ==========================================
 echo.
-for /f "tokens=2 delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set CURRENT_DB_VAL=%%A
+set "CURRENT_DB_VAL="
+for /f "tokens=1,* delims==" %%A in ('findstr /r /i "^DATABASE_URL=" .env 2^>nul') do set "CURRENT_DB_VAL=%%B"
+if not defined CURRENT_DB_VAL for /f "tokens=1,* delims==" %%A in ('findstr /i "DATABASE_URL" .env 2^>nul') do set "CURRENT_DB_VAL=%%B"
 echo DB hien tai: %CURRENT_DB_VAL%
 echo.
-echo  1. Dung ResearchPulse Remote (100.121.61.95:5432) - DB Moi
-echo  2. Dung Local Docker DB (localhost:5433) - DB Cu
+echo  1. Dung ResearchPulse Remote - 100.121.61.95:5432 [DB Moi]
+echo  2. Dung Local Docker DB - localhost:5433 [DB Cu]
 echo  3. Giu nguyen, quay lai menu
 echo.
+set "db_choice="
 set /p db_choice="Chon (1/2/3): "
 
-if "%db_choice%"=="1" (
-    echo DATABASE_URL=postgresql://postgres:postgres123@100.121.61.95:5432/researchpulse> .env
-    echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
-    echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
-    echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
-    echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
-    echo OPENALEX_RPS=8>> .env
-    echo.
-    echo [OK] Da chuyen sang ResearchPulse Remote (100.121.61.95)!
-    pause
-    goto menu
-)
-if "%db_choice%"=="2" (
-    echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
-    echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
-    echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
-    echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
-    echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
-    echo OPENALEX_RPS=8>> .env
-    echo.
-    echo [OK] Da chuyen sang Local Docker DB (localhost:5433)!
-    pause
-    goto menu
-)
+if "%db_choice%"=="1" goto switch_to_remote
+if "%db_choice%"=="2" goto switch_to_local
+goto menu
+
+:switch_to_remote
+echo DATABASE_URL=postgresql://postgres:postgres123@100.121.61.95:5432/researchpulse> .env
+echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
+echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
+echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
+echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
+echo OPENALEX_RPS=8>> .env
+echo SEMANTIC_SCHOLAR_BASE_URL=https://api.semanticscholar.org/graph/v1>> .env
+echo SEMANTIC_SCHOLAR_RPS=1>> .env
+echo.
+echo [OK] Da chuyen sang ResearchPulse Remote [100.121.61.95]!
+pause
+goto menu
+
+:switch_to_local
+echo DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db> .env
+echo OLD_DATABASE_URL=postgresql+psycopg2://postgres:1234@localhost:5433/scientific_journal_db>> .env
+echo NEW_DATABASE_URL=postgresql+psycopg2://postgres:postgres123@100.121.61.95:5432/researchpulse>> .env
+echo OPENALEX_EMAIL=phunghao2701@gmail.com>> .env
+echo OPENALEX_API_KEY=VNljwpuEXO9SBtrvOAiU1X>> .env
+echo OPENALEX_RPS=8>> .env
+echo SEMANTIC_SCHOLAR_BASE_URL=https://api.semanticscholar.org/graph/v1>> .env
+echo SEMANTIC_SCHOLAR_RPS=1>> .env
+echo.
+echo [OK] Da chuyen sang Local Docker DB [localhost:5433]!
+pause
 goto menu
 
 :migrate_db
@@ -870,19 +932,18 @@ exit /b 0
 
 :check_db
 python -c "import os; from sqlalchemy import create_engine; from dotenv import load_dotenv; import pathlib; load_dotenv(pathlib.Path('.env'), override=True); url=os.getenv('DATABASE_URL',''); engine=create_engine(url, connect_args={'connect_timeout': 5}); conn=engine.connect(); conn.close()" 2>nul
-if errorlevel 1 (
-    cls
-    echo ====================================================================
-    echo [LOI] KHONG THE KET NOI DEN DATABASE POSTGRESQL!
-    echo ====================================================================
-    echo DB hien tai trong .env:
-    findstr /i "DATABASE_URL" .env
-    echo.
-    echo Neu dung ResearchPulse: Kiem tra mang WireGuard hoac IP 100.121.61.95.
-    echo Neu dung Local Docker: Kiem tra Docker container dang chay (Option 1).
-    echo Co the dung Option 0 de doi giua cac database.
-    echo ====================================================================
-    pause
-    goto menu
-)
-exit /b 0
+if not errorlevel 1 exit /b 0
+
+cls
+echo ====================================================================
+echo [LOI] KHONG THE KET NOI DEN DATABASE POSTGRESQL!
+echo ====================================================================
+echo DB hien tai trong .env:
+findstr /i "DATABASE_URL" .env
+echo.
+echo Neu dung ResearchPulse: Kiem tra mang WireGuard hoac IP 100.121.61.95.
+echo Neu dung Local Docker: Kiem tra Docker container dang chay [Option 1].
+echo Co the dung Option 0 de doi giua cac database.
+echo ====================================================================
+pause
+goto menu
