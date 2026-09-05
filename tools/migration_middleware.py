@@ -254,6 +254,7 @@ class MigrationMiddleware:
             # VN branch requires core journal/article structure plus VN tables
             return [
                 "Publisher",
+                "Topic",
                 "Institution",
                 "Journal",
                 "Volume",
@@ -264,6 +265,7 @@ class MigrationMiddleware:
                 "Institution_Author",
                 "Keyword",
                 "Keyword_Article",
+                "Sub_Topic",
                 "Article_Citing_Work",
                 "Article_Reference",
             ]
@@ -521,6 +523,17 @@ class MigrationMiddleware:
                     where_clause = f'WHERE "{pk}" > :min_pk'
                     query_params["min_pk"] = max_tgt_pk_val
                     print(f"  [RESUME] Target already has records up to {single_num_pk}={max_tgt_pk_val:,}. Streaming only new rows...")
+        elif self.resume and len(pks) > 1 and "article_id" in pks and "article_id" in common_cols:
+            if self.branch == "vn":
+                where_clause = 'WHERE "article_id" IN (SELECT "article_id" FROM "Article" WHERE "is_vn_journal" = TRUE)'
+                print(f"  [RESUME-VN] Streaming link rows for VN articles only...")
+            else:
+                art_state = self.checkpoint_data.get("tables", {}).get("Article", {})
+                min_art_id = art_state.get("last_pk_value")
+                if min_art_id and min_art_id > 0:
+                    where_clause = f'WHERE "article_id" > :min_art_id'
+                    query_params["min_art_id"] = min_art_id
+                    print(f"  [RESUME] Target already has records up to article_id={min_art_id:,}. Streaming only new rows...")
 
         insert_query = f"""
             INSERT INTO "{table_name}" ({quoted_cols})

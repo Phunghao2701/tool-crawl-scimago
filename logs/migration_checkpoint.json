@@ -1,0 +1,113 @@
+{
+  "started_at": "2026-09-05T09:33:41Z",
+  "source_url": "postgresql+psycopg2://***@localhost:5433/scientific_journal_db",
+  "target_url": "postgresql+psycopg2://***@100.121.61.95:5432/researchpulse",
+  "branch": "vn",
+  "tables": {
+    "Publisher": {
+      "status": "completed",
+      "last_pk_value": 8770,
+      "migrated_rows": 8769,
+      "total_rows": 8769,
+      "updated_at": "2026-09-05T09:33:59Z"
+    },
+    "Institution": {
+      "status": "completed",
+      "last_pk_value": 22,
+      "migrated_rows": 11,
+      "total_rows": 11,
+      "updated_at": "2026-09-05T09:34:09Z"
+    },
+    "Journal": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 33975,
+      "total_rows": 33975,
+      "updated_at": "2026-09-05T09:34:10Z"
+    },
+    "Volume": {
+      "status": "completed",
+      "last_pk_value": 273313,
+      "migrated_rows": 269346,
+      "total_rows": 269346,
+      "updated_at": "2026-09-05T09:34:20Z"
+    },
+    "Issue": {
+      "status": "completed",
+      "last_pk_value": 304566,
+      "migrated_rows": 299198,
+      "total_rows": 299198,
+      "updated_at": "2026-09-05T09:34:29Z"
+    },
+    "Topic": {
+      "status": "completed",
+      "last_pk_value": 4763,
+      "migrated_rows": 4525,
+      "total_rows": 4525,
+      "updated_at": "2026-09-05T09:35:26Z"
+    },
+    "Article": {
+      "status": "completed",
+      "last_pk_value": 1014913,
+      "migrated_rows": 1004424,
+      "total_rows": 1004424,
+      "updated_at": "2026-09-05T09:35:43Z"
+    },
+    "Author": {
+      "status": "completed",
+      "last_pk_value": 2020936,
+      "migrated_rows": 1993254,
+      "total_rows": 1993254,
+      "updated_at": "2026-09-05T09:35:53Z"
+    },
+    "Author_Article": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 3523730,
+      "total_rows": 3523732,
+      "updated_at": "2026-09-05T09:44:46Z"
+    },
+    "Institution_Author": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 15,
+      "total_rows": 15,
+      "updated_at": "2026-09-05T09:38:34Z"
+    },
+    "Keyword": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 62233,
+      "total_rows": 62233,
+      "updated_at": "2026-09-05T09:38:36Z"
+    },
+    "Keyword_Article": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 10679149,
+      "total_rows": 10679149,
+      "updated_at": "2026-09-05T09:38:55Z"
+    },
+    "Sub_Topic": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 2729790,
+      "total_rows": 2729790,
+      "updated_at": "2026-09-05T09:39:04Z"
+    },
+    "Article_Citing_Work": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 3,
+      "total_rows": 3,
+      "updated_at": "2026-09-05T09:39:14Z"
+    },
+    "Article_Reference": {
+      "status": "completed",
+      "last_pk_value": null,
+      "migrated_rows": 5,
+      "total_rows": 5,
+      "updated_at": "2026-09-05T09:39:23Z"
+    }
+  }
+}
