@@ -65,10 +65,11 @@ echo  9. Backfill Institution cho tac gia cu (Dry-run truoc, confirm sau)
 echo  10. Crawl Recursive Research Graph (Dry-run truoc, confirm sau)
 echo --------------------------------------------------------------------
 echo  A. Chay FULL Pipeline co ban: 1 -^> 2 -^> 3 -^> 4 -^> 5 -^> 6 -^> 7
+echo  M. Migrate Data: Chuyen data sang Remote DB (Auto-resume, bo qua data cu)
 echo  0. Quay lai Menu chinh
 echo ====================================================================
 set "vn_choice="
-set /p vn_choice="Vui long chon chuc nang (1-10, A, 0): "
+set /p vn_choice="Vui long chon chuc nang (1-10, A, M, 0): "
 
 rem Trim whitespace
 for /f "tokens=1" %%i in ("%vn_choice%") do set "vn_choice=%%i"
@@ -78,6 +79,7 @@ set "empty_input_count=0"
 
 if "%vn_choice%"=="0" goto exit_vn
 if /i "%vn_choice%"=="A" goto run_full_vn
+if /i "%vn_choice%"=="M" goto run_migrate_vn
 if "%vn_choice%"=="1" goto run_step_1
 if "%vn_choice%"=="2" goto run_step_2
 if "%vn_choice%"=="3" goto run_step_3
@@ -572,6 +574,32 @@ goto menu
 echo.
 echo [ERROR] FULL Pipeline bi loi va da dung lai.
 pause
+goto menu
+
+:run_migrate_vn
+cls
+echo =======================================================
+echo  M. MIGRATE VIETNAM JOURNALS DATA (LOCAL -^> REMOTE)
+echo =======================================================
+echo [INFO] Su dung Migration Middleware thong nhat.
+echo [INFO] Tu dong resume tai diem dung va bo qua data da co.
+echo.
+echo  1. Migrate nhanh VN (--branch vn)
+echo  2. Migrate tat ca cac bang (--branch all)
+echo  0. Quay lai menu
+echo.
+set "mig_choice="
+set /p mig_choice="Chon (1/2/0): "
+if "%mig_choice%"=="1" (
+    python tools\migration_middleware.py --branch vn
+    pause
+    goto menu
+)
+if "%mig_choice%"=="2" (
+    python tools\migration_middleware.py --branch all
+    pause
+    goto menu
+)
 goto menu
 
 :exit_vn
