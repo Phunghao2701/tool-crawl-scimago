@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-@dataclass(slots=True)
+@dataclass
 class JournalSeed:
-    """Seed metadata for one Vietnamese university journal source."""
+    """Seed metadata for one Vietnamese journal source."""
 
     code: str
     name_vi: str
@@ -17,14 +17,19 @@ class JournalSeed:
     platform: str = "unknown"
     issn_print: str | None = None
     issn_online: str | None = None
-    language: str = "vi"
+    language: str | None = None
     subject_hint: str | None = None
+    publisher: str | None = None
+    owning_institution: str | None = None
+    coverage: str | None = None
+    country: str | None = None
+    type: str | None = None
     notes: str | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class CrawledArticle:
-    """Normalized article payload produced by a site parser before DB import."""
+    """Normalized article payload before database import."""
 
     source_journal_code: str
     source_url: str
@@ -42,10 +47,15 @@ class CrawledArticle:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass
 class CrawlResult:
-    """Result returned by a crawler run for one journal source."""
-
     journal: JournalSeed
     articles: list[CrawledArticle]
     warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "journal": asdict(self.journal),
+            "articles": [asdict(article) for article in self.articles],
+            "warnings": self.warnings,
+        }

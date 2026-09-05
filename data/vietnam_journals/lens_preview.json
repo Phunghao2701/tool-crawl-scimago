@@ -1,0 +1,66 @@
+[
+  {
+    "journal": {
+      "code": "vnu_ees_lens",
+      "name_vi": "VNU Journal of Science: Earth and Environmental Sciences",
+      "name_en": "VNU Journal of Science: Earth and Environmental Sciences",
+      "university": "Unknown",
+      "base_url": "https://about.lens.org/",
+      "archive_url": null,
+      "platform": "lens_export",
+      "issn_print": "2588-1094",
+      "issn_online": null,
+      "language": "vi,en",
+      "subject_hint": "Lens export",
+      "notes": "Imported from Lens export: lens_sample.csv"
+    },
+    "articles": [
+      {
+        "source_journal_code": "vnu_ees_lens",
+        "source_url": "https://lens.org/example-work",
+        "title": "Sample Lens Article",
+        "authors": [
+          "Nguyen Van A",
+          "Tran Thi B"
+        ],
+        "abstract": "Sample abstract from Lens export",
+        "keywords": [
+          "remote sensing",
+          "GIS"
+        ],
+        "doi": "10.0000/example.doi",
+        "pdf_url": "https://example.org/sample.pdf",
+        "publication_year": 2026,
+        "volume": "42",
+        "issue": "1",
+        "pages": null,
+        "language": "vi,en",
+        "raw": {
+          "lens_affiliations": "VNU University of Science",
+          "lens_open_access": "Yes",
+          "lens_patent_citations": "2",
+          "lens_scholarly_citations": "15",
+          "lens_row": {
+            "source title": "VNU Journal of Science: Earth and Environmental Sciences",
+            "issn": "2588-1094",
+            "title": "Sample Lens Article",
+            "authors": "Nguyen Van A; Tran Thi B",
+            "doi": "10.0000/example.doi",
+            "abstract": "Sample abstract from Lens export",
+            "publication year": "2026",
+            "volume": "42",
+            "issue": "1",
+            "keywords": "remote sensing; GIS",
+            "source url": "https://lens.org/example-work",
+            "pdf url": "https://example.org/sample.pdf",
+            "open access": "Yes",
+            "patent citations": "2",
+            "scholarly citations": "15",
+            "affiliations": "VNU University of Science"
+          }
+        }
+      }
+    ],
+    "warnings": []
+  }
+]

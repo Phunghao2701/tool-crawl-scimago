@@ -1,1 +1,1 @@
-"""Utilities for crawling Vietnamese university journals."""
+"""Vietnamese journals ingestion toolkit."""

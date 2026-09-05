@@ -1,0 +1,203 @@
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from sqlalchemy import create_engine, text
+from tools.vn_journals.import_one_journal_supabase import load_env, get_supabase_url
+
+def main():
+    print("Database Migrator for ScienceJournalTrendingVN")
+    print("===============================================")
+    load_env()
+    try:
+        db_url = get_supabase_url()
+        print(f"[INFO] Using database URL: {db_url.split('@')[-1] if '@' in db_url else db_url}")
+    except Exception as e:
+        print(f"[ERROR] Could not resolve database URL: {e}")
+        sys.exit(1)
+
+    engine = create_engine(db_url)
+
+    migration_sql = """
+    -- 1. Add owning_institution to Journal table
+    ALTER TABLE "Journal" ADD COLUMN IF NOT EXISTS "owning_institution" varchar;
+
+    -- 2. Add extra metadata columns to Article table
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "openalex_id" varchar;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "landing_url" varchar;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "pdf_url" varchar;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "pages" varchar;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "is_open_access" boolean;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "citing_patents_count" bigint;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "citations_by_year" jsonb;
+    ALTER TABLE "Article" ADD COLUMN IF NOT EXISTS "is_vn_journal" boolean DEFAULT false;
+
+    -- 3. Add author_position to Author_Article table
+    ALTER TABLE "Author_Article" ADD COLUMN IF NOT EXISTS "author_position" varchar;
+
+    -- 4. Store external/internal works that cite a local article.
+    CREATE TABLE IF NOT EXISTS "Article_Citing_Work" (
+      "article_id" bigint NOT NULL,
+      "openalex_work_id" varchar NOT NULL,
+      "doi" varchar,
+      "title" text,
+      "publication_year" int,
+      "source_name" varchar,
+      "source_url" text,
+      "landing_url" text,
+      "pdf_url" text,
+      "cited_by_count" bigint,
+      "type" varchar,
+      "authors" jsonb,
+      "raw" jsonb,
+      "created_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY ("article_id", "openalex_work_id")
+    );
+
+    CREATE INDEX IF NOT EXISTS "idx_article_citing_work_article_id"
+      ON "Article_Citing_Work" ("article_id");
+    CREATE INDEX IF NOT EXISTS "idx_article_citing_work_year"
+      ON "Article_Citing_Work" ("publication_year");
+    CREATE INDEX IF NOT EXISTS "idx_article_citing_work_doi"
+      ON "Article_Citing_Work" ("doi");
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_article_citing_work_article'
+      ) THEN
+        ALTER TABLE "Article_Citing_Work"
+          ADD CONSTRAINT "fk_article_citing_work_article"
+          FOREIGN KEY ("article_id") REFERENCES "Article"("article_id")
+          ON DELETE CASCADE;
+      END IF;
+    END $$;
+
+    -- 5. Store works referenced by a local article.
+    CREATE TABLE IF NOT EXISTS "Article_Reference" (
+      "article_id" bigint NOT NULL,
+      "reference_key" varchar NOT NULL,
+      "openalex_work_id" varchar,
+      "semantic_scholar_id" varchar,
+      "doi" varchar,
+      "title" text,
+      "publication_year" int,
+      "source_name" varchar,
+      "source_url" text,
+      "landing_url" text,
+      "pdf_url" text,
+      "cited_by_count" bigint,
+      "type" varchar,
+      "authors" jsonb,
+      "raw" jsonb,
+      "referenced_article_id" bigint,
+      "created_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY ("article_id", "reference_key")
+    );
+
+    ALTER TABLE "Article_Citing_Work"
+      ADD COLUMN IF NOT EXISTS "citing_article_id" bigint;
+
+    ALTER TABLE "Article_Reference"
+      ADD COLUMN IF NOT EXISTS "referenced_article_id" bigint;
+
+    CREATE INDEX IF NOT EXISTS "idx_article_citing_work_citing_article_id"
+      ON "Article_Citing_Work" ("citing_article_id");
+
+    CREATE INDEX IF NOT EXISTS "idx_article_reference_article_id"
+      ON "Article_Reference" ("article_id");
+    CREATE INDEX IF NOT EXISTS "idx_article_reference_openalex"
+      ON "Article_Reference" ("openalex_work_id");
+    CREATE INDEX IF NOT EXISTS "idx_article_reference_doi"
+      ON "Article_Reference" ("doi");
+    CREATE INDEX IF NOT EXISTS "idx_article_reference_referenced_article_id"
+      ON "Article_Reference" ("referenced_article_id");
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_article_reference_article'
+      ) THEN
+        ALTER TABLE "Article_Reference"
+          ADD CONSTRAINT "fk_article_reference_article"
+          FOREIGN KEY ("article_id") REFERENCES "Article"("article_id")
+          ON DELETE CASCADE;
+      END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_article_citing_work_citing_article'
+      ) THEN
+        ALTER TABLE "Article_Citing_Work"
+          ADD CONSTRAINT "fk_article_citing_work_citing_article"
+          FOREIGN KEY ("citing_article_id") REFERENCES "Article"("article_id")
+          ON DELETE SET NULL;
+      END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_article_reference_referenced_article'
+      ) THEN
+        ALTER TABLE "Article_Reference"
+          ADD CONSTRAINT "fk_article_reference_referenced_article"
+          FOREIGN KEY ("referenced_article_id") REFERENCES "Article"("article_id")
+          ON DELETE SET NULL;
+      END IF;
+    END $$;
+    """
+
+    print("[INFO] Running DB schema migration...")
+    try:
+        with engine.connect() as conn:
+            trans = conn.begin()
+            try:
+                raw_conn = conn.connection
+                with raw_conn.cursor() as cursor:
+                    cursor.execute(migration_sql)
+                trans.commit()
+                print("[OK] Database schema migrated successfully.")
+            except Exception as e:
+                trans.rollback()
+                print(f"[ERROR] Migration transaction failed, rolled back: {e}")
+                sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Connection failed: {e}")
+        sys.exit(1)
+
+    # 4. Check and seed Zone for Viet Nam
+    print("[INFO] Checking Zone table for VN...")
+    try:
+        with engine.begin() as conn:
+            # Check if VN exists
+            row = conn.execute(text('SELECT "zone_id" FROM "Zone" WHERE "zone_id" = 81 OR "code" = \'VN\'')).fetchone()
+            if not row:
+                print("[INFO] Seeding default Zone row for Viet Nam (zone_id=81)...")
+                # Move serial sequence to allow inserting explicit ID 81
+                seq_name = conn.execute(
+                    text("SELECT pg_get_serial_sequence('\"Zone\"', 'zone_id')")
+                ).scalar_one_or_none()
+                
+                conn.execute(text(
+                    'INSERT INTO "Zone" ("zone_id", "code", "name", "type", "iso_code", "source") '
+                    'VALUES (81, \'VN\', \'Viet Nam\', \'COUNTRY\', \'VNM\', \'ISO\')'
+                ))
+                if seq_name:
+                    conn.execute(text("SELECT setval(:seq_name, 82, false)"), {"seq_name": seq_name})
+                print("[OK] Seeded Viet Nam Zone successfully.")
+            else:
+                print(f"[OK] Viet Nam Zone row already exists (zone_id={row[0]}).")
+    except Exception as e:
+        print(f"[WARNING] Zone check/seed failed: {e}")
+
+
+if __name__ == "__main__":
+    main()

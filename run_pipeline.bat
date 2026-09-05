@@ -29,7 +29,6 @@ if not exist .env (
 
 chcp 65001 >nul 2>&1
 title Scimago and OpenAlex ETL Pipeline Control Panel
-color 0B
 
 rem Non-interactive smoke test flags (for automated tests)
 set "PIPELINE_DRY_RUN="
@@ -83,10 +82,11 @@ echo  6. Export Report: Xuat bao cao Excel va CSV
 echo  7. View Database Statistics: Xem so lieu thong ke trong database
 echo  8. Run FULL Pipeline: Chay lien tuc tu Import den Sync den Export
 echo  M. Migrate Data: Chuyen data tu Local Docker sang ResearchPulse (100.121.61.95)
+echo  P. Vietnam Journals Pipeline: Thu thap du lieu tap chi Viet Nam (10 buoc)
 echo  9. Exit: Thoat
 echo ====================================================================
 set "choice="
-set /p choice="Vui long chon chuc nang (1-9, 0, E, R, M): "
+set /p choice="Vui long chon chuc nang (1-9, 0, E, R, M, P): "
 
 rem Trim whitespace from choice
 for /f "tokens=1" %%i in ("%choice%") do set "choice=%%i"
@@ -106,6 +106,7 @@ if /i "%choice%"=="9" goto exit
 if /i "%choice%"=="E" goto sync_semantic
 if /i "%choice%"=="R" goto backfill_references
 if /i "%choice%"=="M" goto migrate_db
+if /i "%choice%"=="P" goto vn_pipeline
 
 rem Cac option N, V, L tam thoi chua dung theo yeu cau cua user
 if /i "%choice%"=="N" (
@@ -134,6 +135,17 @@ set /a empty_input_count+=1
 if %empty_input_count% geq 5 (
     echo [THONG BAO] Khong nhan duoc lua chon, thoat.
     goto exit
+)
+:vn_pipeline
+if exist "run_vn_pipeline.bat" (
+    call run_vn_pipeline.bat
+) else if exist "tools\run_vn_pipeline.bat" (
+    call tools\run_vn_pipeline.bat
+) else if exist "scratch\papervn_worktree\tools\run_vn_pipeline.bat" (
+    call scratch\papervn_worktree\tools\run_vn_pipeline.bat
+) else (
+    echo [ERROR] Khong tim thay run_vn_pipeline.bat!
+    pause
 )
 goto menu
 
